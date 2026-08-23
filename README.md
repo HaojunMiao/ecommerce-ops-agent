@@ -1,3 +1,5 @@
-# Go Agent Platform
+# E-commerce Operations Agent Platform
 
-一个从零实现的 Go 企业级 AI Agent 学习项目。
+一个基于 Go 与 Eino 构建的企业级 AI Agent 平台，面向电商运营场景，将大模型能力与订单、库存、调拨等业务系统连接起来。
+
+项目通过可版本化的 Agent 配置、工具调用和可控执行流程，帮助运营人员完成信息查询、异常分析与业务操作，适用于跨境电商运营助手、库存调度、订单处理和企业内部智能工作流等场景。
