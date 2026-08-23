@@ -17,7 +17,7 @@ func main() {
 	mux := http.NewServeMux()
 
 	// 注册健康检查接口
-	// 收到GET /healthz请求时，执行该匿名函数，返回200状态码和ok字符串
+	// 收到/healthz请求时，执行该匿名函数，返回200状态码和ok字符串
 	// _ *http.Request表示不需要读取请求体内容
 	// w http.ResponseWriter用于写HTTP响应
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
