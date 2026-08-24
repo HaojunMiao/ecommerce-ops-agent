@@ -12,13 +12,13 @@ import (
 	"github.com/HaojunMiao/ecommerce-ops-agent/internal/config"
 )
 
-// Gateway 将在 end 版本接入 Eino 的 OpenAI 兼容模型。
 type Gateway struct {
 	model model.BaseChatModel
 }
 
 func NewGateway(cfg config.Config) (*Gateway, error) {
 	// 初始化大模型连接
+	// 拿到一个chatmodel，给到Gateway的model字段
 	chatModel, err := openai.NewChatModel(context.Background(), &openai.ChatModelConfig{
 		APIKey:  cfg.LLMAPIKey,
 		BaseURL: cfg.LLMBaseURL,
@@ -60,7 +60,7 @@ func (g *Gateway) Stream(
 	}
 	stream, err := g.model.Stream(ctx, messages, opts...)
 	if err != nil {
-		return nil, fmt.Errorf("generate resp failed, err:%w", err)
+		return nil, fmt.Errorf("stream resp failed, err:%w", err)
 	}
 	return stream, nil
 }

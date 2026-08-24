@@ -11,7 +11,10 @@ import (
 
 	"github.com/HaojunMiao/ecommerce-ops-agent/internal/api"
 	"github.com/HaojunMiao/ecommerce-ops-agent/internal/config"
+	"github.com/HaojunMiao/ecommerce-ops-agent/internal/domain"
+	"github.com/HaojunMiao/ecommerce-ops-agent/internal/platform"
 	"github.com/HaojunMiao/ecommerce-ops-agent/internal/platform/iam"
+	"github.com/HaojunMiao/ecommerce-ops-agent/internal/runtime/engine"
 	"github.com/HaojunMiao/ecommerce-ops-agent/internal/runtime/llm"
 )
 
@@ -27,16 +30,31 @@ func main() {
 	iamService := iam.New(iam.NewMemoryStore(), cfg.JWTSecret, cfg.JWTIssuer)
 
 	// 初始化LLM
-	if _, err := llm.NewGateway(cfg); err != nil {
+	gateway, err := llm.NewGateway(cfg)
+	if err != nil {
 		log.Fatalf("create LLM Gateway failed, err:%v", err)
 	}
 
+	// platform
+	controlPlane := platform.New()
+	controlPlane.PutConversation(&domain.Conversation{
+		ID:             "demo-conversation",
+		AgentID:        "demo",
+		AgentVersionID: "demo-v1",
+	})
+	controlPlane.PutSnapshot(&engine.AgentSnapshot{
+		ID:           "demo-v1",
+		AgentID:      "demo",
+		SystemPrompt: "你是一个 eino 框架学习助手",
+		MaxSteps:     4,
+	})
+	runtime := engine.New(controlPlane, gateway)
+
 	// 创建HTTP server，监听8080端口
-	// 收到请求后交给mux做路由分发
 	// 客户端必须在五秒内发送完 HTTP Header，否则服务端终止读取。这可以避免客户端长时间占用连接
 	server := &http.Server{
 		Addr:              cfg.HTTPAddr,
-		Handler:           api.NewRouter(iamService),
+		Handler:           api.NewRouter(iamService, runtime),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 

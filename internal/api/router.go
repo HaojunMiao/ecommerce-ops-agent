@@ -10,7 +10,7 @@ import (
 	"github.com/HaojunMiao/ecommerce-ops-agent/internal/platform/iam"
 )
 
-func NewRouter(iamService *iam.Service) http.Handler {
+func NewRouter(iamService *iam.Service, runtimes ...ChatRuntime) http.Handler {
 	// 使用chi框架
 	router := chi.NewRouter()
 
@@ -74,6 +74,9 @@ func NewRouter(iamService *iam.Service) http.Handler {
 				"role":         middleware.WorkspaceRole(r.Context()),
 			})
 		})
+		if len(runtimes) > 0 && runtimes[0] != nil {
+			protected.With(middleware.Workspace(iamService)).Post("/stream/agents/{agentID}/chat", NewStreamHandler(runtimes[0]).ServeHTTP)
+		}
 	})
 	return router
 }
