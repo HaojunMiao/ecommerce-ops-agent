@@ -25,18 +25,18 @@ var (
 	ErrNotFound            = errors.New("business resource not found")
 	ErrInvalidTransition   = errors.New("invalid business state transition")
 	ErrInsufficientStock   = errors.New("insufficient inventory")
-	ErrIdempotencyKey      = errors.New("idempotency key is required")
+	ErrIdempotencyKey      = errors.New("idempotency_key is required")
 	ErrIdempotencyConflict = errors.New("idempotency key was already used for a different request")
 )
 
 // 调货接口请求体
 type TransferRequest struct {
-	SKU            string
-	FromWarehouse  string // 从哪个仓库调货
-	ToWarehouse    string // 调货到哪个仓库
-	IdempotencyKey string // 幂等key，避免重复调货
-	Quantity       int    // 调货数量
-	DryRun         bool   // 是否只是模拟调货，不实际扣减库存
+	SKU            string `json:"sku"`
+	FromWarehouse  string `json:"from_warehouse"`  // 从哪个仓库调货
+	ToWarehouse    string `json:"to_warehouse"`    // 调货到哪个仓库
+	IdempotencyKey string `json:"idempotency_key"` // 幂等key，避免重复调货
+	Quantity       int    `json:"quantity"`        // 调货数量
+	DryRun         bool   `json:"dry_run"`         // 是否只是模拟调货，不实际扣减库存
 }
 
 // 相关数据存储在内存中，方便测试和演示（不涉及数据库操作，用内存中的map模拟数据库）
@@ -55,6 +55,7 @@ type idempotencyRecord struct {
 }
 
 // NewSeeded 创建一个带有初始数据的Service实例（创建带有预置订单和库存数据的服务）
+// mock 初始订单数据和库存数据（不为了写一个agent项目而从头写一个跨境电商项目）
 func NewSeeded() *Service {
 	return &Service{
 		orders: map[string]domain.Order{
