@@ -6,8 +6,8 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
-	"github.com/HaojunMiao/go-agent-platform/internal/api/middleware"
-	"github.com/HaojunMiao/go-agent-platform/internal/platform/iam"
+	"github.com/HaojunMiao/ecommerce-ops-agent/internal/api/middleware"
+	"github.com/HaojunMiao/ecommerce-ops-agent/internal/platform/iam"
 )
 
 func NewRouter(iamService *iam.Service) http.Handler {

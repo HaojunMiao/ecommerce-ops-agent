@@ -7,7 +7,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/HaojunMiao/go-agent-platform/projects/crossborder/internal/domain"
+	"github.com/HaojunMiao/ecommerce-ops-agent/projects/crossborder/internal/domain"
 )
 
 // 模拟跨境电商后台数据库+业务服务

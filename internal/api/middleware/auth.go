@@ -5,7 +5,7 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/HaojunMiao/go-agent-platform/internal/platform/iam"
+	"github.com/HaojunMiao/ecommerce-ops-agent/internal/platform/iam"
 )
 
 type userIDKey struct{}

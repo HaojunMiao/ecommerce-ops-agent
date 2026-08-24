@@ -6,7 +6,7 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/HaojunMiao/go-agent-platform/internal/domain"
+	"github.com/HaojunMiao/ecommerce-ops-agent/internal/domain"
 )
 
 var ErrUserNotFound = errors.New("user not found")

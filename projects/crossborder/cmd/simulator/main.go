@@ -7,8 +7,8 @@ import (
 	"os"
 	"time"
 
-	"github.com/HaojunMiao/go-agent-platform/projects/crossborder/internal/httpapi"
-	"github.com/HaojunMiao/go-agent-platform/projects/crossborder/internal/service"
+	"github.com/HaojunMiao/ecommerce-ops-agent/projects/crossborder/internal/httpapi"
+	"github.com/HaojunMiao/ecommerce-ops-agent/projects/crossborder/internal/service"
 )
 
 func main() {

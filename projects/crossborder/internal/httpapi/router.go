@@ -7,8 +7,8 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/HaojunMiao/go-agent-platform/projects/crossborder/internal/domain"
-	"github.com/HaojunMiao/go-agent-platform/projects/crossborder/internal/service"
+	"github.com/HaojunMiao/ecommerce-ops-agent/projects/crossborder/internal/domain"
+	"github.com/HaojunMiao/ecommerce-ops-agent/projects/crossborder/internal/service"
 )
 
 type Service interface {

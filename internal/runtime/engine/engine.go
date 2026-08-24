@@ -4,18 +4,18 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/HaojunMiao/go-agent-platform/internal/domain"
-	"github.com/cloudwego/eino/schema"
+	"github.com/HaojunMiao/ecommerce-ops-agent/internal/domain"
+	"github.com/cloudwego/eino/components/model"
 )
 
 // Agent 运行相关 （真正跟大模型打交道的地方）
 // 把实际的大模型与 Agent 隔离开，避免将Agent与某个具体的大模型（如Deepseek）绑定
 // Runtime 负责“按照已经发布的配置真正运行”。
 
-type Generator interface {
-	// 根据 消息 和 Tool定义 生成模型回复
-	Generate(ctx context.Context, messages []*schema.Message, tools []*schema.ToolInfo) (*schema.Message, error)
-}
+// type Generator interface {
+// 	// 根据 消息 和 Tool定义 生成模型回复
+// 	Generate(ctx context.Context, messages []*schema.Message, tools []*schema.ToolInfo) (*schema.Message, error)
+// }
 
 // Platform 读取控制面数据的接口
 // 可以根据conversationID找到conversation对象，进而通过agentVersionID找到AgentSnapshot
@@ -37,14 +37,14 @@ type AgentSnapshot struct {
 // Engine 依赖接口，不与具体的实现绑定
 type Engine struct {
 	platform Platform
-	gen      Generator
+	model    model.BaseChatModel
 }
 
 // New 创建Agent Runtime
-func New(Platform Platform, gen Generator) *Engine {
+func New(platform Platform, model model.BaseChatModel) *Engine {
 	return &Engine{
-		platform: Platform,
-		gen:      gen,
+		platform: platform,
+		model:    model,
 	}
 }
 

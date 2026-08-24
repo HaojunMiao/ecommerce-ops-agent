@@ -13,7 +13,7 @@ import (
 	"github.com/golang-jwt/jwt/v5"
 	"golang.org/x/crypto/bcrypt"
 
-	"github.com/HaojunMiao/go-agent-platform/internal/domain"
+	"github.com/HaojunMiao/ecommerce-ops-agent/internal/domain"
 )
 
 var ErrInvalidCredentials = errors.New("invalid email or password")

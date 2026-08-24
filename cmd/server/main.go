@@ -9,9 +9,10 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/HaojunMiao/go-agent-platform/internal/api"
-	"github.com/HaojunMiao/go-agent-platform/internal/config"
-	"github.com/HaojunMiao/go-agent-platform/internal/platform/iam"
+	"github.com/HaojunMiao/ecommerce-ops-agent/internal/api"
+	"github.com/HaojunMiao/ecommerce-ops-agent/internal/config"
+	"github.com/HaojunMiao/ecommerce-ops-agent/internal/platform/iam"
+	"github.com/HaojunMiao/ecommerce-ops-agent/internal/runtime/llm"
 )
 
 // 带优雅退出的服务
@@ -24,6 +25,11 @@ func main() {
 	}
 
 	iamService := iam.New(iam.NewMemoryStore(), cfg.JWTSecret, cfg.JWTIssuer)
+
+	// 初始化LLM
+	if _, err := llm.NewGateway(cfg); err != nil {
+		log.Fatalf("create LLM Gateway failed, err:%v", err)
+	}
 
 	// 创建HTTP server，监听8080端口
 	// 收到请求后交给mux做路由分发

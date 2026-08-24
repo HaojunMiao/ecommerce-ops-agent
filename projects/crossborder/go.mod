@@ -1,3 +1,3 @@
-module github.com/HaojunMiao/go-agent-platform/projects/crossborder
+module github.com/HaojunMiao/ecommerce-ops-agent/projects/crossborder
 
 go 1.26.6
