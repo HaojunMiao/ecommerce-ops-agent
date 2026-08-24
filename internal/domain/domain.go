@@ -5,6 +5,31 @@ import "time"
 // 核心领域对象
 // 控制面 和 运行时 共享的一些核心数据
 
+// User 是平台登录身份。
+type User struct {
+	ID           string    `json:"id"`
+	Email        string    `json:"email"`
+	PasswordHash string    `json:"-"`
+	Name         string    `json:"name"`
+	CreatedAt    time.Time `json:"created_at"`
+}
+
+// Workspace 是业务资源的逻辑隔离边界。
+type Workspace struct {
+	ID        string    `json:"id"`
+	Name      string    `json:"name"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
+// Membership 将登录身份绑定到允许访问的 Workspace。
+// Workspace header 只负责选择范围，访问权始终从服务端成员关系解析。
+type Membership struct {
+	UserID      string    `json:"user_id"`
+	WorkspaceID string    `json:"workspace_id"`
+	Role        string    `json:"role"`
+	CreatedAt   time.Time `json:"created_at"`
+}
+
 // AgentVersion 定义了一个 Agent 的不可变版本
 // 方便迭代，使新发布的版本不影响已有的版本，不是原地修改而是通过发布新版本的形式
 /*
