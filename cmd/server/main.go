@@ -14,6 +14,7 @@ import (
 	"github.com/HaojunMiao/ecommerce-ops-agent/internal/domain"
 	"github.com/HaojunMiao/ecommerce-ops-agent/internal/platform"
 	"github.com/HaojunMiao/ecommerce-ops-agent/internal/platform/iam"
+	platformtool "github.com/HaojunMiao/ecommerce-ops-agent/internal/platform/tool"
 	"github.com/HaojunMiao/ecommerce-ops-agent/internal/runtime/engine"
 	"github.com/HaojunMiao/ecommerce-ops-agent/internal/runtime/llm"
 )
@@ -49,12 +50,13 @@ func main() {
 		MaxSteps:     4,
 	})
 	runtime := engine.New(controlPlane, gateway)
+	toolRegistry := platformtool.NewRegistry()
 
 	// 创建HTTP server，监听8080端口
 	// 客户端必须在五秒内发送完 HTTP Header，否则服务端终止读取。这可以避免客户端长时间占用连接
 	server := &http.Server{
 		Addr:              cfg.HTTPAddr,
-		Handler:           api.NewRouter(iamService, runtime),
+		Handler:           api.NewRouterWithControlPlane(iamService, runtime, api.ControlPlane{Tools: toolRegistry}),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 
