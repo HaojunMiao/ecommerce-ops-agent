@@ -1,4 +1,4 @@
-.PHONY: build test run admin-build crossborder-build crossborder-test
+.PHONY: build test run sandbox-runner-build sandbox-runner-run admin-build crossborder-build crossborder-test
 
 build:
 	@mkdir -p bin
@@ -9,6 +9,13 @@ test:
 
 run:
 	go run ./cmd/server
+
+sandbox-runner-build:
+	@mkdir -p bin
+	go build -o bin/sandbox-runner ./cmd/sandbox-runner
+
+sandbox-runner-run:
+	go run ./cmd/sandbox-runner
 
 admin-build:
 	cd web/admin && npm run build

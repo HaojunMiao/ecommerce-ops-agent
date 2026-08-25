@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 
+	"github.com/HaojunMiao/ecommerce-ops-agent/internal/api/middleware"
 	"github.com/HaojunMiao/ecommerce-ops-agent/internal/runtime/engine"
 )
 
@@ -51,6 +52,7 @@ func (h *StreamHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid JSON", http.StatusBadRequest)
 		return
 	}
+	req.WorkspaceID = middleware.WorkspaceID(r.Context())
 
 	flusher, ok := w.(http.Flusher)
 	if !ok {

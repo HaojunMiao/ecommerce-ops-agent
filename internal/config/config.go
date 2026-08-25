@@ -9,24 +9,28 @@ import (
 )
 
 type Config struct {
-	HTTPAddr   string
-	JWTSecret  string
-	JWTIssuer  string
-	LLMBaseURL string
-	LLMAPIKey  string
-	LLMModel   string
-	LLMTimeout time.Duration
+	HTTPAddr           string
+	JWTSecret          string
+	JWTIssuer          string
+	LLMBaseURL         string
+	LLMAPIKey          string
+	LLMModel           string
+	LLMTimeout         time.Duration
+	SandboxRunnerURL   string
+	SandboxRunnerToken string
 }
 
 func Load() Config {
 	return Config{
-		HTTPAddr:   valueOrDefault("KBOT_HTTP_ADDR", ":8080"),
-		JWTSecret:  os.Getenv("KBOT_JWT_SECRET"),
-		JWTIssuer:  valueOrDefault("KBOT_JWT_ISSUER", "kbot-course"),
-		LLMBaseURL: valueOrDefault("KBOT_LLM_BASE_URL", "https://ark.cn-beijing.volces.com/api/v3"),
-		LLMAPIKey:  firstNonEmptyEnv("KBOT_LLM_API_KEY", "ARK_API_KEY"),
-		LLMModel:   valueOrDefault("KBOT_LLM_MODEL", "doubao-seed-2-0-lite-260215"),
-		LLMTimeout: durationOrDefault("KBOT_LLM_TIMEOUT_SECONDS", 30*time.Second),
+		HTTPAddr:           valueOrDefault("KBOT_HTTP_ADDR", ":8080"),
+		JWTSecret:          os.Getenv("KBOT_JWT_SECRET"),
+		JWTIssuer:          valueOrDefault("KBOT_JWT_ISSUER", "kbot-course"),
+		LLMBaseURL:         valueOrDefault("KBOT_LLM_BASE_URL", "https://ark.cn-beijing.volces.com/api/v3"),
+		LLMAPIKey:          firstNonEmptyEnv("KBOT_LLM_API_KEY", "ARK_API_KEY"),
+		LLMModel:           valueOrDefault("KBOT_LLM_MODEL", "doubao-seed-2-0-lite-260215"),
+		LLMTimeout:         durationOrDefault("KBOT_LLM_TIMEOUT_SECONDS", 30*time.Second),
+		SandboxRunnerURL:   valueOrDefault("KBOT_SANDBOX_RUNNER_URL", "http://127.0.0.1:8081"),
+		SandboxRunnerToken: os.Getenv("KBOT_SANDBOX_RUNNER_TOKEN"),
 	}
 }
 
@@ -48,6 +52,12 @@ func (c Config) Validate() error {
 	}
 	if c.LLMTimeout <= 0 {
 		return fmt.Errorf("LLM timeout must be positive")
+	}
+	if strings.TrimSpace(c.SandboxRunnerURL) == "" {
+		return fmt.Errorf("KBOT_SANDBOX_RUNNER_URL is required")
+	}
+	if len(c.SandboxRunnerToken) < 32 {
+		return fmt.Errorf("KBOT_SANDBOX_RUNNER_TOKEN must contain at least 32 characters")
 	}
 	return nil
 }

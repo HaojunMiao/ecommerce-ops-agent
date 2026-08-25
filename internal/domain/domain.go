@@ -60,6 +60,7 @@ type AgentVersion struct {
 // AgentVersion字段表示这个会话固定使用哪个Agent版本，之后发布了新版本也继续使用旧版本
 type Conversation struct {
 	ID             string
+	WorkspaceID    string
 	AgentID        string
 	AgentVersionID string
 	UserID         string

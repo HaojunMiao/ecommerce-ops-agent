@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"github.com/HaojunMiao/ecommerce-ops-agent/internal/domain"
+	"github.com/HaojunMiao/ecommerce-ops-agent/internal/runtime/tooling"
 	"github.com/cloudwego/eino/components/model"
 )
 
@@ -27,17 +28,24 @@ type Platform interface {
 
 // AgentSnapshot Runtime使用的解析好的固定Agent配置（此时在运行的版本）
 type AgentSnapshot struct {
-	ID           string
-	AgentID      string
-	WorkspaceID  string
-	SystemPrompt string
-	MaxSteps     int
+	ID             string
+	AgentID        string
+	WorkspaceID    string
+	SystemPrompt   string
+	MaxSteps       int
+	ToolVersionIDs []string
 }
 
 // Engine 依赖接口，不与具体的实现绑定
 type Engine struct {
 	platform Platform
 	model    model.BaseChatModel
+	tools    ToolRuntime
+}
+
+type ToolRuntime interface {
+	Bind(ctx context.Context, workspaceID string, versionIDs []string) ([]tooling.Binding, error)
+	Execute(ctx context.Context, call tooling.Call) (tooling.Result, error)
 }
 
 // New 创建Agent Runtime
@@ -46,6 +54,11 @@ func New(platform Platform, model model.BaseChatModel) *Engine {
 		platform: platform,
 		model:    model,
 	}
+}
+
+func (e *Engine) WithTools(tools ToolRuntime) *Engine {
+	e.tools = tools
+	return e
 }
 
 // ResolveSnapshot 解析 agent 运行的配置
@@ -73,6 +86,9 @@ func (e *Engine) ResolveSnapshot(ctx context.Context, conversationID string) (*A
 			conversation.AgentVersionID,
 			snapshot.ID,
 		)
+	}
+	if conversation.WorkspaceID != "" && snapshot.WorkspaceID != "" && conversation.WorkspaceID != snapshot.WorkspaceID {
+		return nil, fmt.Errorf("conversation and agent snapshot belong to different workspaces")
 	}
 	return snapshot, nil
 }

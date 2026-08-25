@@ -17,6 +17,8 @@ import (
 	platformtool "github.com/HaojunMiao/ecommerce-ops-agent/internal/platform/tool"
 	"github.com/HaojunMiao/ecommerce-ops-agent/internal/runtime/engine"
 	"github.com/HaojunMiao/ecommerce-ops-agent/internal/runtime/llm"
+	"github.com/HaojunMiao/ecommerce-ops-agent/internal/runtime/sandbox"
+	"github.com/HaojunMiao/ecommerce-ops-agent/internal/runtime/tooling"
 )
 
 // 带优雅退出的服务
@@ -51,6 +53,12 @@ func main() {
 	})
 	runtime := engine.New(controlPlane, gateway)
 	toolRegistry := platformtool.NewRegistry()
+	sandboxClient, err := sandbox.NewClient(cfg.SandboxRunnerURL, cfg.SandboxRunnerToken)
+	if err != nil {
+		log.Fatalf("create sandbox runner client: %v", err)
+	}
+	toolExecutor := tooling.NewExecutor(toolRegistry, nil, "crossborder-sim", "localhost", "127.0.0.1").WithSandbox(sandboxClient)
+	runtime.WithTools(toolExecutor)
 
 	// 创建HTTP server，监听8080端口
 	// 客户端必须在五秒内发送完 HTTP Header，否则服务端终止读取。这可以避免客户端长时间占用连接
