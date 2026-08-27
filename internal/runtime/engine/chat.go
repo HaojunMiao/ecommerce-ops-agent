@@ -2,6 +2,7 @@ package engine
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"strings"
@@ -15,9 +16,10 @@ import (
 
 // ChatRequest 是一次运行请求；ConversationID 用于多轮会话续接。
 type ChatRequest struct {
-	ConversationID string `json:"conversation_id"`
-	Message        string `json:"message"`
-	WorkspaceID    string `json:"-"`
+	ConversationID   string `json:"conversation_id"`
+	Message          string `json:"message"`
+	WorkspaceID      string `json:"-"`
+	AgentEnvironment string `json:"agent_env,omitempty"`
 }
 
 // Event 是 Runtime 对传输层公开的稳定事件信封。
@@ -83,11 +85,46 @@ func (e *Engine) ChatStream(ctx context.Context, req ChatRequest, emit Emitter) 
 	}}); err != nil {
 		return err
 	}
-	messages := []*schema.Message{schema.SystemMessage(systemPrompt), schema.UserMessage(req.Message)}
-	answer, streamed, err := e.runPlan(ctx, snapshot, plan, packages, messages, emit)
+	// 每轮模型输入都按“系统提示词 -> 历史消息 -> 本轮用户消息”重新组装。
+	// 如果控制面实现了 ConversationMessageStore，就先恢复历史，再保存本轮用户输入。
+	messages := []*schema.Message{schema.SystemMessage(systemPrompt)}
+	if history, ok := e.platform.(ConversationMessageStore); ok {
+		stored, historyErr := history.ListMessages(ctx, snapshot.WorkspaceID, req.ConversationID)
+		if historyErr != nil {
+			return fmt.Errorf("load conversation history: %w", historyErr)
+		}
+		for _, message := range stored {
+			switch message.Role {
+			case "user":
+				messages = append(messages, schema.UserMessage(message.Content))
+			case "assistant":
+				messages = append(messages, schema.AssistantMessage(message.Content, nil))
+			}
+		}
+		if historyErr := history.AppendMessage(ctx, snapshot.WorkspaceID, req.ConversationID, "user", req.Message); historyErr != nil {
+			return fmt.Errorf("persist user message: %w", historyErr)
+		}
+	}
+	messages = append(messages, schema.UserMessage(req.Message))
+	answer, streamed, err := e.runPlan(ctx, req.ConversationID, snapshot, plan, packages, messages, emit)
 	if err != nil {
+		var awaiting *AwaitingApprovalError
+		if errors.As(err, &awaiting) {
+			if emitErr := emitContext(ctx, emit, Event{Type: "approval_requested", Data: map[string]string{
+				"approval_id": awaiting.ApprovalID, "tool_name": awaiting.ToolName,
+				"tool_call_id": awaiting.ToolCallID, "tool_version_id": awaiting.ToolVersionID,
+			}}); emitErr != nil {
+				return emitErr
+			}
+			return emitContext(ctx, emit, Event{Type: "run_finished", Data: map[string]string{"status": "awaiting_approval"}})
+		}
 		_ = emitContext(ctx, emit, Event{Type: "error", Data: map[string]string{"message": err.Error()}})
 		return fmt.Errorf("generate: %w", err)
+	}
+	if history, ok := e.platform.(ConversationMessageStore); ok {
+		if historyErr := history.AppendMessage(ctx, snapshot.WorkspaceID, req.ConversationID, "assistant", answer.Content); historyErr != nil {
+			return fmt.Errorf("persist assistant message: %w", historyErr)
+		}
 	}
 	if !streamed {
 		for _, delta := range answerDeltas(answer.Content, 8) {
@@ -145,7 +182,7 @@ func (e *Engine) executionPlan(ctx context.Context, snapshot *AgentSnapshot) (*l
 // runPlan 统一执行工具绑定和模型策略：有工具、重试或备用模型时交给 ADK，
 // 否则保留直接 Stream 的轻量路径。
 func (e *Engine) runPlan(
-	ctx context.Context, snapshot *AgentSnapshot, plan *llm.ExecutionPlan,
+	ctx context.Context, conversationID string, snapshot *AgentSnapshot, plan *llm.ExecutionPlan,
 	packages []platformskill.Package, messages []*schema.Message, emit Emitter,
 ) (*schema.Message, bool, error) {
 	if plan == nil || plan.Model == nil {
@@ -186,9 +223,11 @@ func (e *Engine) runPlan(
 		}
 		runner := NewADKRunner(plan.Model, e.tools, snapshot.WorkspaceID).
 			WithModelPolicy(plan.Retry, plan.Failover).
-			WithToolAuthorization(authorize)
+			WithToolAuthorization(authorize).
+			WithApprovals(e.approvals, conversationID)
 		if skillRuntime != nil {
-			runner.WithHandlers(skillRuntime.Handlers...)
+			runner.WithHandlers(skillRuntime.Handlers...).
+				WithSkillState(skillRuntime.ActiveName, skillRuntime.Restore)
 		}
 		answer, err := runner.Run(ctx, messages, bindings, maxSteps, emit)
 		return answer, false, err

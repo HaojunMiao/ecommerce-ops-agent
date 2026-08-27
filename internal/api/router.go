@@ -8,24 +8,61 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
+	"github.com/HaojunMiao/ecommerce-ops-agent/internal/a2ui"
 	"github.com/HaojunMiao/ecommerce-ops-agent/internal/api/middleware"
 	markdown "github.com/HaojunMiao/ecommerce-ops-agent/internal/connector/markdown_folder"
+	"github.com/HaojunMiao/ecommerce-ops-agent/internal/domain"
+	"github.com/HaojunMiao/ecommerce-ops-agent/internal/platform/agent"
+	"github.com/HaojunMiao/ecommerce-ops-agent/internal/platform/approval"
 	"github.com/HaojunMiao/ecommerce-ops-agent/internal/platform/iam"
 	"github.com/HaojunMiao/ecommerce-ops-agent/internal/platform/kb"
 	"github.com/HaojunMiao/ecommerce-ops-agent/internal/platform/modelconfig"
 	"github.com/HaojunMiao/ecommerce-ops-agent/internal/platform/prompt"
 	"github.com/HaojunMiao/ecommerce-ops-agent/internal/platform/skill"
 	platformtool "github.com/HaojunMiao/ecommerce-ops-agent/internal/platform/tool"
+	"github.com/HaojunMiao/ecommerce-ops-agent/internal/runtime/engine"
 	"github.com/HaojunMiao/ecommerce-ops-agent/internal/runtime/retriever"
 )
 
 type ControlPlane struct {
-	Tools    *platformtool.Registry
-	KBs      *kb.Service
-	Search   *retriever.KnowledgeSearch
-	Prompts  *prompt.Service
-	Profiles *modelconfig.Registry
-	Skills   *skill.Service
+	Agents         *agent.Service
+	Approvals      *approval.Service
+	Tools          *platformtool.Registry
+	KBs            *kb.Service
+	Search         *retriever.KnowledgeSearch
+	Prompts        *prompt.Service
+	Profiles       *modelconfig.Registry
+	Skills         *skill.Service
+	ApprovalWorker interface{ Wake() }
+}
+
+// agentConfigRequest 是创建 Agent 或发布新版本时提交的运行配置。
+// 这些组件版本 ID 会一起固化到 AgentSnapshot 中。
+type agentConfigRequest struct {
+	Name                  string   `json:"name"`
+	Template              string   `json:"template"`
+	SystemPrompt          string   `json:"system_prompt"`
+	SystemPromptVersionID string   `json:"system_prompt_version_id"`
+	ToolIDs               []string `json:"tool_ids"`
+	SkillVersionIDs       []string `json:"skill_version_ids"`
+	KBIDs                 []string `json:"kb_ids"`
+	MaxSteps              int      `json:"max_steps"`
+}
+
+func (req agentConfigRequest) snapshot(workspaceID, agentID, versionID string) engine.AgentSnapshot {
+	if req.MaxSteps <= 0 {
+		req.MaxSteps = 4
+	}
+	if req.SystemPrompt == "" && req.SystemPromptVersionID == "" {
+		req.SystemPrompt = "You are a helpful kbot course agent."
+	}
+	return engine.AgentSnapshot{
+		ID: versionID, AgentID: agentID, WorkspaceID: workspaceID,
+		SystemPrompt: req.SystemPrompt, MaxSteps: req.MaxSteps,
+		PromptVersionID: req.SystemPromptVersionID,
+		ToolVersionIDs:  append([]string(nil), req.ToolIDs...), SkillVersionIDs: append([]string(nil), req.SkillVersionIDs...),
+		KnowledgeVersionIDs: append([]string(nil), req.KBIDs...),
+	}
 }
 
 func NewRouter(iamService *iam.Service, runtimes ...ChatRuntime) http.Handler {
@@ -96,6 +133,140 @@ func NewRouterWithControlPlane(iamService *iam.Service, runtime ChatRuntime, con
 				"role":         middleware.WorkspaceRole(r.Context()),
 			})
 		})
+		if control.Agents != nil {
+			protected.With(middleware.Workspace(iamService)).Get("/api/v1/agents", func(w http.ResponseWriter, r *http.Request) {
+				writeJSON(w, http.StatusOK, control.Agents.ListAgents(r.Context(), middleware.WorkspaceID(r.Context())))
+			})
+			protected.With(middleware.Workspace(iamService)).Post("/api/v1/agents", func(w http.ResponseWriter, r *http.Request) {
+				var req agentConfigRequest
+				if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+					http.Error(w, "invalid JSON", http.StatusBadRequest)
+					return
+				}
+				workspaceID := middleware.WorkspaceID(r.Context())
+				item, err := control.Agents.CreateAgent(r.Context(), workspaceID, req.Name, req.Template)
+				if err != nil {
+					http.Error(w, err.Error(), http.StatusBadRequest)
+					return
+				}
+				// 创建 Agent 时同步发布初始版本，并默认放到 dev 环境供新会话选择。
+				versionID := fmt.Sprintf("agent-version-%d", time.Now().UnixNano())
+				version := domain.AgentVersion{
+					ID: versionID, AgentID: item.ID, WorkspaceID: workspaceID,
+					Version: 1, SystemPrompt: req.SystemPrompt, CreatedAt: time.Now().UTC(),
+				}
+				if err := control.Agents.Publish(r.Context(), version, req.snapshot(workspaceID, item.ID, versionID)); err != nil {
+					http.Error(w, err.Error(), http.StatusBadRequest)
+					return
+				}
+				if err := control.Agents.Promote(r.Context(), workspaceID, item.ID, "dev", versionID); err != nil {
+					http.Error(w, err.Error(), http.StatusBadRequest)
+					return
+				}
+				writeJSON(w, http.StatusCreated, item)
+			})
+			protected.With(middleware.Workspace(iamService)).Get("/api/v1/agents/{agentID}", func(w http.ResponseWriter, r *http.Request) {
+				item, err := control.Agents.GetAgent(r.Context(), middleware.WorkspaceID(r.Context()), chi.URLParam(r, "agentID"))
+				if err != nil {
+					http.Error(w, "agent not found", http.StatusNotFound)
+					return
+				}
+				writeJSON(w, http.StatusOK, item)
+			})
+			protected.With(middleware.Workspace(iamService)).Get("/api/v1/agents/{agentID}/versions", func(w http.ResponseWriter, r *http.Request) {
+				writeJSON(w, http.StatusOK, control.Agents.ListVersions(r.Context(), middleware.WorkspaceID(r.Context()), chi.URLParam(r, "agentID")))
+			})
+			protected.With(middleware.Workspace(iamService)).Post("/api/v1/agents/{agentID}/versions", func(w http.ResponseWriter, r *http.Request) {
+				var req agentConfigRequest
+				if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+					http.Error(w, "invalid JSON", http.StatusBadRequest)
+					return
+				}
+				workspaceID, agentID := middleware.WorkspaceID(r.Context()), chi.URLParam(r, "agentID")
+				if _, err := control.Agents.GetAgent(r.Context(), workspaceID, agentID); err != nil {
+					http.Error(w, "agent not found", http.StatusNotFound)
+					return
+				}
+				versions := control.Agents.ListVersions(r.Context(), workspaceID, agentID)
+				versionID := fmt.Sprintf("agent-version-%d", time.Now().UnixNano())
+				version := domain.AgentVersion{
+					ID: versionID, AgentID: agentID, WorkspaceID: workspaceID,
+					Version: len(versions) + 1, SystemPrompt: req.SystemPrompt, CreatedAt: time.Now().UTC(),
+				}
+				if err := control.Agents.Publish(r.Context(), version, req.snapshot(workspaceID, agentID, versionID)); err != nil {
+					http.Error(w, err.Error(), http.StatusBadRequest)
+					return
+				}
+				writeJSON(w, http.StatusCreated, version)
+			})
+			protected.With(middleware.Workspace(iamService)).Post("/api/v1/agents/{agentID}/promote", func(w http.ResponseWriter, r *http.Request) {
+				var req struct {
+					VersionID string `json:"version_id"`
+					Env       string `json:"env"`
+				}
+				if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+					http.Error(w, "invalid JSON", http.StatusBadRequest)
+					return
+				}
+				if err := control.Agents.Promote(r.Context(), middleware.WorkspaceID(r.Context()), chi.URLParam(r, "agentID"), req.Env, req.VersionID); err != nil {
+					http.Error(w, err.Error(), http.StatusBadRequest)
+					return
+				}
+				w.WriteHeader(http.StatusNoContent)
+			})
+			protected.With(middleware.Workspace(iamService)).Get("/api/v1/conversations", func(w http.ResponseWriter, r *http.Request) {
+				writeJSON(w, http.StatusOK, control.Agents.ListConversations(r.Context(), middleware.WorkspaceID(r.Context()), r.URL.Query().Get("agent_id")))
+			})
+			protected.With(middleware.Workspace(iamService)).Get("/api/v1/conversations/{conversationID}", func(w http.ResponseWriter, r *http.Request) {
+				conversation, messages, err := control.Agents.ConversationDetail(
+					r.Context(), middleware.WorkspaceID(r.Context()), middleware.UserID(r.Context()), chi.URLParam(r, "conversationID"),
+				)
+				if err != nil {
+					http.Error(w, "conversation not found", http.StatusNotFound)
+					return
+				}
+				writeJSON(w, http.StatusOK, map[string]any{"conversation": conversation, "messages": messages})
+			})
+			if runtime != nil {
+				// 非流式管理接口复用同一运行时，便于管理后台直接发起聊天。
+				protected.With(middleware.Workspace(iamService)).Post("/api/v1/agents/{agentID}/chat", func(w http.ResponseWriter, r *http.Request) {
+					var req engine.ChatRequest
+					if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+						http.Error(w, "invalid JSON", http.StatusBadRequest)
+						return
+					}
+					workspaceID := middleware.WorkspaceID(r.Context())
+					conversation, err := control.Agents.ResolveConversation(
+						r.Context(), workspaceID, middleware.UserID(r.Context()), chi.URLParam(r, "agentID"),
+						req.AgentEnvironment, req.ConversationID,
+					)
+					if err != nil {
+						http.Error(w, err.Error(), http.StatusNotFound)
+						return
+					}
+					req.ConversationID, req.WorkspaceID = conversation.ID, workspaceID
+					var content, status string
+					err = runtime.ChatStream(r.Context(), req, func(event engine.Event) error {
+						if event.Type == "answer_done" {
+							content = event.Text
+						}
+						if event.Type == "run_finished" {
+							if data, ok := event.Data.(map[string]string); ok {
+								status = data["status"]
+							}
+						}
+						return nil
+					})
+					if err != nil {
+						http.Error(w, err.Error(), http.StatusBadGateway)
+						return
+					}
+					writeJSON(w, http.StatusOK, map[string]string{
+						"content": content, "conversation_id": conversation.ID, "status": status,
+					})
+				})
+			}
+		}
 		if control.Tools != nil {
 			protected.With(middleware.Workspace(iamService)).Get("/api/v1/tools", func(w http.ResponseWriter, r *http.Request) {
 				writeJSON(w, http.StatusOK, control.Tools.List(r.Context(), middleware.WorkspaceID(r.Context())))
@@ -316,8 +487,67 @@ func NewRouterWithControlPlane(iamService *iam.Service, runtime ChatRuntime, con
 				writeJSON(w, http.StatusCreated, map[string]any{"skill": version, "version": version})
 			})
 		}
+		if control.Approvals != nil {
+			// A2UI 动作不是只凭前端传来的 approval_id 就执行：服务端会同时核对
+			// 会话、界面、按钮和审批单绑定，防止篡改请求去批准另一笔操作。
+			protected.With(middleware.Workspace(iamService)).Post("/api/v1/conversations/{conversationID}/a2ui/actions", func(w http.ResponseWriter, r *http.Request) {
+				var action a2ui.ActionRequest
+				if err := json.NewDecoder(r.Body).Decode(&action); err != nil || action.Version != a2ui.Version {
+					http.Error(w, "invalid A2UI action", http.StatusBadRequest)
+					return
+				}
+				if action.Action.Name != "approval.approve" && action.Action.Name != "approval.reject" {
+					http.Error(w, "A2UI action is not allowed", http.StatusBadRequest)
+					return
+				}
+
+				approvalID, _ := action.Action.Context["approval_id"].(string)
+				contextConversationID, _ := action.Action.Context["conversation_id"].(string)
+				contextSurfaceID, _ := action.Action.Context["surface_id"].(string)
+				conversationID := chi.URLParam(r, "conversationID")
+				workspaceID := middleware.WorkspaceID(r.Context())
+				request, err := control.Approvals.Get(r.Context(), workspaceID, approvalID)
+				expectedComponentID := "approval-reject"
+				if action.Action.Name == "approval.approve" {
+					expectedComponentID = "approval-approve"
+				}
+				if err != nil || request.RunID != conversationID || contextConversationID != conversationID ||
+					action.Action.SurfaceID != "approval-"+approvalID || contextSurfaceID != action.Action.SurfaceID ||
+					action.Action.SourceComponentID != expectedComponentID {
+					http.Error(w, "approval action binding does not match", http.StatusForbidden)
+					return
+				}
+
+				approved := action.Action.Name == "approval.approve"
+				if err := control.Approvals.Decide(r.Context(), workspaceID, approvalID, middleware.UserID(r.Context()), approved); err != nil {
+					http.Error(w, err.Error(), http.StatusConflict)
+					return
+				}
+				status := "rejected"
+				if approved {
+					status = "approved"
+					// 除了一秒一次的兜底轮询，主动唤醒可以让批准后的恢复几乎立即开始。
+					if control.ApprovalWorker != nil {
+						control.ApprovalWorker.Wake()
+					}
+				}
+				message := a2ui.Message{Version: a2ui.Version, UpdateDataModel: &a2ui.UpdateDataModel{
+					SurfaceID: action.Action.SurfaceID, Path: "/status", Value: status,
+				}}
+				if err := a2ui.Validate(message); err != nil {
+					http.Error(w, err.Error(), http.StatusInternalServerError)
+					return
+				}
+				w.Header().Set("Content-Type", "application/a2ui+json")
+				_ = json.NewEncoder(w).Encode(message)
+			})
+		}
 		if runtime != nil {
-			protected.With(middleware.Workspace(iamService)).Post("/stream/agents/{agentID}/chat", NewStreamHandler(runtime).ServeHTTP)
+			stream := NewStreamHandler(runtime)
+			if control.Agents != nil {
+				stream.WithConversations(control.Agents)
+			}
+			protected.With(middleware.Workspace(iamService)).Post("/stream/agents/{agentID}/chat", stream.ServeHTTP)
 		}
 	})
 	return router

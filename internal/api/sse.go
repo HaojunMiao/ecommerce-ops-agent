@@ -7,7 +7,10 @@ import (
 	"fmt"
 	"net/http"
 
+	"github.com/go-chi/chi/v5"
+
 	"github.com/HaojunMiao/ecommerce-ops-agent/internal/api/middleware"
+	"github.com/HaojunMiao/ecommerce-ops-agent/internal/domain"
 	"github.com/HaojunMiao/ecommerce-ops-agent/internal/runtime/engine"
 )
 
@@ -17,9 +20,21 @@ type ChatRuntime interface {
 	ChatStream(ctx context.Context, req engine.ChatRequest, emit engine.Emitter) error
 }
 
+// ConversationResolver 让传输层可以在第一次聊天时创建会话，
+// 或在后续聊天时校验并续接已有会话。
+type ConversationResolver interface {
+	ResolveConversation(ctx context.Context, workspaceID, userID, agentID, environment, conversationID string) (*domain.Conversation, error)
+}
+
 // StreamHandler 的 SSE 编码与取消传播
 type StreamHandler struct {
-	runtime ChatRuntime
+	runtime       ChatRuntime
+	conversations ConversationResolver
+}
+
+func (h *StreamHandler) WithConversations(conversations ConversationResolver) *StreamHandler {
+	h.conversations = conversations
+	return h
 }
 
 func NewStreamHandler(runtime ChatRuntime) *StreamHandler {
@@ -53,6 +68,22 @@ func (h *StreamHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	req.WorkspaceID = middleware.WorkspaceID(r.Context())
+	if h.conversations != nil {
+		// 首轮请求可以不传 conversation_id：根据 Agent 的目标环境创建会话并固定版本。
+		// 后续请求传入 ID 时，ResolveConversation 会校验工作空间、用户和 Agent 归属。
+		conversation, err := h.conversations.ResolveConversation(
+			r.Context(), req.WorkspaceID, middleware.UserID(r.Context()), chi.URLParam(r, "agentID"),
+			req.AgentEnvironment, req.ConversationID,
+		)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusNotFound)
+			return
+		}
+		req.ConversationID = conversation.ID
+	} else if req.ConversationID == "" {
+		http.Error(w, "conversation_id is required", http.StatusBadRequest)
+		return
+	}
 
 	flusher, ok := w.(http.Flusher)
 	if !ok {

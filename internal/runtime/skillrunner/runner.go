@@ -58,6 +58,27 @@ func (r *Runtime) Authorize(toolName, arguments string) error {
 	return r.policy.Authorize(toolName, arguments)
 }
 
+// ActiveName 返回当前已经激活的 Skill，供审批中断时一并写入检查点。
+func (r *Runtime) ActiveName() string {
+	if r == nil || r.policy == nil {
+		return ""
+	}
+	active := r.policy.Active()
+	if active == nil {
+		return ""
+	}
+	return active.Name
+}
+
+// Restore 恢复中断前激活的 Skill，使续跑后的工具权限与原运行保持一致。
+func (r *Runtime) Restore(name string) error {
+	if r == nil || r.policy == nil || name == "" {
+		return nil
+	}
+	_, err := r.policy.Activate(name)
+	return err
+}
+
 // NewRuntime 使用 Eino 官方 Skill Middleware 完成 L1 列表、skill Tool 与 L2 指令注入。
 func NewRuntime(
 	ctx context.Context,

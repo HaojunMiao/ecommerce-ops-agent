@@ -1,4 +1,4 @@
-.PHONY: build test run sandbox-runner-build sandbox-runner-run admin-build crossborder-build crossborder-test
+.PHONY: build test run sandbox-runner-build sandbox-runner-run migrate-up migrate-down admin-build crossborder-build crossborder-test
 
 build:
 	@mkdir -p bin
@@ -16,6 +16,12 @@ sandbox-runner-build:
 
 sandbox-runner-run:
 	go run ./cmd/sandbox-runner
+
+migrate-up:
+	migrate -path migrations -database "$(KBOT_DATABASE_URL)" up
+
+migrate-down:
+	migrate -path migrations -database "$(KBOT_DATABASE_URL)" down 1
 
 admin-build:
 	cd web/admin && npm run build

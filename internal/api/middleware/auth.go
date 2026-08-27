@@ -76,7 +76,8 @@ func WorkspaceRole(ctx context.Context) string {
 // workspaceMethodAllow viewer 只读，member 可运行已发布能力，
 // editor 可修改控制面，审批动作只允许 owner/admin。
 func workspaceMethodAllowed(role, method, path string) bool {
-	if method != http.MethodGet && method != http.MethodHead && strings.Contains(path, "/approvals/") {
+	if method != http.MethodGet && method != http.MethodHead &&
+		(strings.Contains(path, "/approvals/") || strings.HasSuffix(path, "/a2ui/actions")) {
 		return role == iam.WorkspaceRoleOwner || role == iam.WorkspaceRoleAdmin
 	}
 	if role == iam.WorkspaceRoleOwner || role == iam.WorkspaceRoleAdmin || role == iam.WorkspaceRoleEditor {

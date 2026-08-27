@@ -12,8 +12,9 @@ import (
 
 	"github.com/HaojunMiao/ecommerce-ops-agent/internal/api"
 	"github.com/HaojunMiao/ecommerce-ops-agent/internal/config"
-	"github.com/HaojunMiao/ecommerce-ops-agent/internal/domain"
-	"github.com/HaojunMiao/ecommerce-ops-agent/internal/platform"
+	postgresinfra "github.com/HaojunMiao/ecommerce-ops-agent/internal/infrastructure/postgres"
+	"github.com/HaojunMiao/ecommerce-ops-agent/internal/platform/agent"
+	"github.com/HaojunMiao/ecommerce-ops-agent/internal/platform/approval"
 	"github.com/HaojunMiao/ecommerce-ops-agent/internal/platform/iam"
 	"github.com/HaojunMiao/ecommerce-ops-agent/internal/platform/kb"
 	"github.com/HaojunMiao/ecommerce-ops-agent/internal/platform/modelconfig"
@@ -36,7 +37,16 @@ func main() {
 		log.Fatal(err)
 	}
 
-	iamService := iam.New(iam.NewMemoryStore(), cfg.JWTSecret, cfg.JWTIssuer)
+	// 启动时先建立并验证 PostgreSQL 连接；数据库不可用时直接失败，
+	// 避免服务看似启动成功、实际请求才不断报持久化错误。
+	databaseContext, databaseCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	pool, err := postgresinfra.Open(databaseContext, cfg.DatabaseURL)
+	databaseCancel()
+	if err != nil {
+		log.Fatalf("connect PostgreSQL: %v", err)
+	}
+	defer pool.Close()
+	iamService := iam.New(iam.NewPostgresStore(pool), cfg.JWTSecret, cfg.JWTIssuer)
 
 	// 初始化LLM
 	gateway, err := llm.NewGateway(cfg)
@@ -44,20 +54,9 @@ func main() {
 		log.Fatalf("create LLM Gateway failed, err:%v", err)
 	}
 
-	// platform
-	controlPlane := platform.New()
-	controlPlane.PutConversation(&domain.Conversation{
-		ID:             "demo-conversation",
-		AgentID:        "demo",
-		AgentVersionID: "demo-v1",
-	})
-	controlPlane.PutSnapshot(&engine.AgentSnapshot{
-		ID:           "demo-v1",
-		AgentID:      "demo",
-		SystemPrompt: "你是一个 eino 框架学习助手",
-		MaxSteps:     4,
-	})
-	runtime := engine.New(controlPlane, gateway)
+	// Agent 控制面同时实现 Engine 所需的会话与快照读取接口。
+	agents := agent.NewPostgresService(pool)
+	runtime := engine.New(agents, gateway)
 	toolRegistry := platformtool.NewRegistry()
 	// 第 10 课使用进程内存保存知识库和文档，服务重启后数据会丢失。
 	knowledgeBases := kb.NewService()
@@ -67,6 +66,7 @@ func main() {
 	prompts := prompt.NewService()
 	profiles := modelconfig.NewRegistry([]byte(cfg.JWTSecret))
 	skills := skill.NewService()
+	approvals := approval.NewPostgresService(pool)
 	sandboxClient, err := sandbox.NewClient(cfg.SandboxRunnerURL, cfg.SandboxRunnerToken)
 	if err != nil {
 		log.Fatalf("create sandbox runner client: %v", err)
@@ -93,15 +93,16 @@ func main() {
 		body, marshalErr := json.Marshal(results)
 		return tooling.Result{StatusCode: http.StatusOK, Body: body}, marshalErr
 	})
-	runtime.WithTools(toolExecutor).WithRuntimeConfig(prompts, profiles).WithSkills(skills)
+	runtime.WithTools(toolExecutor).WithRuntimeConfig(prompts, profiles).WithSkills(skills).WithApprovals(approvals)
+	approvalWorker := engine.NewApprovalWorker(approvals, runtime, "course-server-worker")
 
 	// 创建HTTP server，监听8080端口
 	// 客户端必须在五秒内发送完 HTTP Header，否则服务端终止读取。这可以避免客户端长时间占用连接
 	server := &http.Server{
 		Addr: cfg.HTTPAddr,
 		Handler: api.NewRouterWithControlPlane(iamService, runtime, api.ControlPlane{
-			Tools: toolRegistry, KBs: knowledgeBases, Search: knowledgeSearch,
-			Prompts: prompts, Profiles: profiles, Skills: skills,
+			Agents: agents, Approvals: approvals, Tools: toolRegistry, KBs: knowledgeBases, Search: knowledgeSearch,
+			Prompts: prompts, Profiles: profiles, Skills: skills, ApprovalWorker: approvalWorker,
 		}),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
@@ -113,6 +114,11 @@ func main() {
 		syscall.SIGTERM,
 	)
 	defer stop()
+	go func() {
+		if err := approvalWorker.Run(ctx); err != nil && !errors.Is(err, context.Canceled) {
+			log.Printf("approval worker stopped: %v", err)
+		}
+	}()
 
 	go func() {
 		<-ctx.Done()

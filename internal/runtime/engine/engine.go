@@ -40,6 +40,7 @@ type AgentSnapshot struct {
 	ModelProfileVersionID string
 	ToolVersionIDs        []string
 	SkillVersionIDs       []string
+	KnowledgeVersionIDs   []string
 }
 
 // executionPlanner 将已固定的模型配置版本转换为本次运行的主模型、重试和故障切换策略。
@@ -49,13 +50,14 @@ type executionPlanner interface {
 
 // Engine 依赖接口，不与具体的实现绑定
 type Engine struct {
-	platform Platform
-	model    model.BaseChatModel
-	planner  executionPlanner
-	tools    ToolRuntime
-	prompts  PromptRenderer
-	profiles ModelProfileResolver
-	skills   SkillResolver
+	platform  Platform
+	model     model.BaseChatModel
+	planner   executionPlanner
+	tools     ToolRuntime
+	prompts   PromptRenderer
+	profiles  ModelProfileResolver
+	skills    SkillResolver
+	approvals ApprovalGate
 }
 
 type ToolRuntime interface {
@@ -76,6 +78,13 @@ type ModelProfileResolver interface {
 // SkillResolver 仅允许运行时按工作空间和固定版本 ID 解析已发布 Skill。
 type SkillResolver interface {
 	Resolve(ctx context.Context, workspaceID, versionID string) (skill.Version, error)
+}
+
+// ConversationMessageStore 是运行时读取和追加多轮消息所需的最小接口。
+// Engine 通过接口探测保持兼容：旧 Platform 未实现它时仍可执行单轮对话。
+type ConversationMessageStore interface {
+	ListMessages(ctx context.Context, workspaceID, conversationID string) ([]domain.Message, error)
+	AppendMessage(ctx context.Context, workspaceID, conversationID, role, content string) error
 }
 
 // New 创建Agent Runtime
@@ -102,6 +111,11 @@ func (e *Engine) WithRuntimeConfig(prompts PromptRenderer, profiles ModelProfile
 
 func (e *Engine) WithSkills(skills SkillResolver) *Engine {
 	e.skills = skills
+	return e
+}
+
+func (e *Engine) WithApprovals(approvals ApprovalGate) *Engine {
+	e.approvals = approvals
 	return e
 }
 
