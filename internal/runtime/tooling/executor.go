@@ -49,13 +49,18 @@ type Binding struct {
 	Info      *schema.ToolInfo
 }
 
-
 type Executor struct {
 	registry     Registry
 	client       *http.Client
 	allowedHosts map[string]struct{}
 	sandbox      SandboxRunner
+	// sdk 保存进程内工具名称到 Go 处理函数的映射。
+	sdk map[string]SDKHandler
 }
+
+// SDKHandler 是 internal_sdk 工具的执行函数。它不发 HTTP 请求，
+// 而是在当前进程内直接调用知识检索等平台能力。
+type SDKHandler func(ctx context.Context, workspaceID string, arguments map[string]any) (Result, error)
 
 func NewExecutor(registry Registry, client *http.Client, allowedHosts ...string) *Executor {
 	if client == nil {
@@ -71,7 +76,10 @@ func NewExecutor(registry Registry, client *http.Client, allowedHosts ...string)
 			allowed[normalized] = struct{}{}
 		}
 	}
-	executor := &Executor{registry: registry, client: client, allowedHosts: allowed}
+	executor := &Executor{
+		registry: registry, client: client, allowedHosts: allowed,
+		sdk: make(map[string]SDKHandler),
+	}
 	clone := *client
 	if transport, ok := clone.Transport.(*http.Transport); ok {
 		clone.Transport = executor.secureTransport(transport.Clone())
@@ -101,6 +109,14 @@ func NewExecutor(registry Registry, client *http.Client, allowedHosts ...string)
 func (e *Executor) WithSandbox(runner SandboxRunner) *Executor {
 	e.sandbox = runner
 	return e
+}
+
+// RegisterSDK 注册进程内工具实现。工具版本的 Endpoint 保存该注册名，
+// Execute 解析到 internal_sdk 后再通过名称找到对应处理函数。
+func (e *Executor) RegisterSDK(name string, handler SDKHandler) {
+	if strings.TrimSpace(name) != "" && handler != nil {
+		e.sdk[name] = handler
+	}
 }
 
 func (e *Executor) Execute(ctx context.Context, call Call) (Result, error) {
@@ -140,6 +156,14 @@ func (e *Executor) Execute(ctx context.Context, call Call) (Result, error) {
 			return Result{}, fmt.Errorf("execute code tool: %w", err)
 		}
 		return Result{StatusCode: http.StatusOK, Body: []byte(output)}, nil
+	}
+	if version.SourceType == "internal_sdk" {
+		handler := e.sdk[version.Endpoint]
+		if handler == nil {
+			return Result{}, fmt.Errorf("internal SDK tool %q is not registered", version.Endpoint)
+		}
+		// 参数已经通过统一 JSON Schema 校验，内部工具直接复用解析后的 map。
+		return handler(ctx, call.WorkspaceID, arguments)
 	}
 	endpoint, err := url.Parse(version.Endpoint)
 	if err != nil {

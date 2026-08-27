@@ -9,12 +9,17 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"github.com/HaojunMiao/ecommerce-ops-agent/internal/api/middleware"
+	markdown "github.com/HaojunMiao/ecommerce-ops-agent/internal/connector/markdown_folder"
 	"github.com/HaojunMiao/ecommerce-ops-agent/internal/platform/iam"
+	"github.com/HaojunMiao/ecommerce-ops-agent/internal/platform/kb"
 	platformtool "github.com/HaojunMiao/ecommerce-ops-agent/internal/platform/tool"
+	"github.com/HaojunMiao/ecommerce-ops-agent/internal/runtime/retriever"
 )
 
 type ControlPlane struct {
-	Tools *platformtool.Registry
+	Tools  *platformtool.Registry
+	KBs    *kb.Service
+	Search *retriever.KnowledgeSearch
 }
 
 func NewRouter(iamService *iam.Service, runtimes ...ChatRuntime) http.Handler {
@@ -104,18 +109,24 @@ func NewRouterWithControlPlane(iamService *iam.Service, runtime ChatRuntime, con
 					return
 				}
 				var endpoint struct {
-					URL string `json:"url"`
+					URL     string `json:"url"`
+					SDKName string `json:"sdk_name"`
 				}
 				if err := json.Unmarshal([]byte(req.EndpointConfig), &endpoint); err != nil {
 					http.Error(w, "invalid endpoint_config", http.StatusBadRequest)
 					return
 				}
 				versionID := fmt.Sprintf("tool-version-%d", time.Now().UnixNano())
+				// REST 工具保存 URL；internal_sdk 工具保存进程内注册名。
+				executableEndpoint := endpoint.URL
+				if req.SourceType == "internal_sdk" {
+					executableEndpoint = endpoint.SDKName
+				}
 				version := platformtool.Version{
 					ID: versionID, ToolID: versionID,
 					WorkspaceID: middleware.WorkspaceID(r.Context()), Name: req.Name,
 					SourceType: req.SourceType, Description: req.Description,
-					InputSchema: []byte(req.SchemaJSON), Endpoint: endpoint.URL,
+					InputSchema: []byte(req.SchemaJSON), Endpoint: executableEndpoint,
 					AuthConfig: req.AuthConfig, HasAuth: req.AuthConfig != "",
 					Sensitive: req.Sensitive, Published: true, CreatedAt: time.Now().UTC(),
 				}
@@ -125,6 +136,83 @@ func NewRouterWithControlPlane(iamService *iam.Service, runtime ChatRuntime, con
 				}
 				writeJSON(w, http.StatusCreated, version)
 			})
+		}
+		if control.KBs != nil {
+			// 知识库属于工作空间资源，所有接口都必须经过 Workspace 中间件校验。
+			protected.With(middleware.Workspace(iamService)).Get("/api/v1/kbs", func(w http.ResponseWriter, r *http.Request) {
+				writeJSON(w, http.StatusOK, control.KBs.List(r.Context(), middleware.WorkspaceID(r.Context())))
+			})
+			protected.With(middleware.Workspace(iamService)).Post("/api/v1/kbs", func(w http.ResponseWriter, r *http.Request) {
+				var req struct {
+					Name string `json:"name"`
+				}
+				if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+					http.Error(w, "invalid JSON", http.StatusBadRequest)
+					return
+				}
+				base, err := control.KBs.Create(r.Context(), middleware.WorkspaceID(r.Context()), req.Name)
+				if err != nil {
+					http.Error(w, err.Error(), http.StatusBadRequest)
+					return
+				}
+				writeJSON(w, http.StatusCreated, base)
+			})
+			protected.With(middleware.Workspace(iamService)).Post("/api/v1/kbs/{kbID}/connectors/markdown/sync", func(w http.ResponseWriter, r *http.Request) {
+				var req struct {
+					RootPath string `json:"root_path"`
+				}
+				if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+					http.Error(w, "invalid JSON", http.StatusBadRequest)
+					return
+				}
+				// 每次同步请求创建一个带本次 RootPath 的 Connector 实例。
+				job, err := control.KBs.Sync(
+					r.Context(), middleware.WorkspaceID(r.Context()), chi.URLParam(r, "kbID"),
+					markdown.New(req.RootPath),
+				)
+				if err != nil {
+					// 返回失败的 job，调用方仍能看到具体失败阶段和原因。
+					writeJSON(w, http.StatusUnprocessableEntity, job)
+					return
+				}
+				writeJSON(w, http.StatusAccepted, job)
+			})
+			protected.With(middleware.Workspace(iamService)).Get("/api/v1/kbs/{kbID}/documents", func(w http.ResponseWriter, r *http.Request) {
+				documents, err := control.KBs.Documents(
+					r.Context(), middleware.WorkspaceID(r.Context()), chi.URLParam(r, "kbID"),
+				)
+				if err != nil {
+					http.Error(w, "knowledge base not found", http.StatusNotFound)
+					return
+				}
+				writeJSON(w, http.StatusOK, documents)
+			})
+			if control.Search != nil {
+				// 管理端检索 Playground：不经过模型，便于直接比较三种检索模式。
+				protected.With(middleware.Workspace(iamService)).Post("/api/v1/kbs/{kbID}/search", func(w http.ResponseWriter, r *http.Request) {
+					var req struct {
+						Query string `json:"query"`
+						Mode  string `json:"mode"`
+						TopK  int    `json:"top_k"`
+					}
+					if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+						http.Error(w, "invalid JSON", http.StatusBadRequest)
+						return
+					}
+					if req.TopK == 0 {
+						req.TopK = 5
+					}
+					results, err := control.Search.Search(
+						r.Context(), middleware.WorkspaceID(r.Context()), chi.URLParam(r, "kbID"),
+						req.Query, req.Mode, req.TopK,
+					)
+					if err != nil {
+						http.Error(w, err.Error(), http.StatusBadRequest)
+						return
+					}
+					writeJSON(w, http.StatusOK, results)
+				})
+			}
 		}
 		if runtime != nil {
 			protected.With(middleware.Workspace(iamService)).Post("/stream/agents/{agentID}/chat", NewStreamHandler(runtime).ServeHTTP)
