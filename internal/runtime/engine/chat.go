@@ -7,6 +7,10 @@ import (
 	"strings"
 
 	"github.com/cloudwego/eino/schema"
+
+	platformskill "github.com/HaojunMiao/ecommerce-ops-agent/internal/platform/skill"
+	"github.com/HaojunMiao/ecommerce-ops-agent/internal/runtime/llm"
+	"github.com/HaojunMiao/ecommerce-ops-agent/internal/runtime/skillrunner"
 )
 
 // ChatRequest 是一次运行请求；ConversationID 用于多轮会话续接。
@@ -53,65 +57,34 @@ func (e *Engine) ChatStream(ctx context.Context, req ChatRequest, emit Emitter) 
 		return fmt.Errorf("conversation is outside the active workspace")
 	}
 
-	if err := emitContext(ctx, emit, Event{
-		Type: "run_started",
-		Data: map[string]string{
-			"conversation_id":  req.ConversationID,
-			"agent_version_id": snapshot.ID,
-		},
-	}); err != nil {
+	// 先按快照固定的模型配置版本准备主模型、重试和故障切换策略。
+	plan, err := e.executionPlan(ctx, snapshot)
+	if err != nil {
 		return err
 	}
-
-	// 执行会话：没有绑定工具时直接流式调用模型；绑定工具时交给 Eino ADK 执行 ReAct。
-	messages := []*schema.Message{
-		schema.SystemMessage(snapshot.SystemPrompt), // 每一个agent有一个系统提示词
-		schema.UserMessage(req.Message),
-	}
-	var answer *schema.Message
-	streamed := false
-	if len(snapshot.ToolVersionIDs) > 0 {
-		if e.tools == nil {
-			return fmt.Errorf("tool runtime is required by the pinned agent snapshot")
+	// 兼容旧快照的字面量 SystemPrompt；新快照优先按 PromptVersionID 解析不可变版本。
+	systemPrompt := snapshot.SystemPrompt
+	if snapshot.PromptVersionID != "" {
+		if e.prompts == nil {
+			return fmt.Errorf("prompt resolver is required by the pinned snapshot")
 		}
-		bindings, bindErr := e.tools.Bind(ctx, snapshot.WorkspaceID, snapshot.ToolVersionIDs)
-		if bindErr != nil {
-			return fmt.Errorf("bind pinned tools: %w", bindErr)
-		}
-		answer, err = NewADKRunner(e.model, e.tools, snapshot.WorkspaceID).Run(ctx, messages, bindings, snapshot.MaxSteps, emit)
-	} else {
-		if e.model == nil {
-			return fmt.Errorf("chat model is required")
-		}
-		stream, streamErr := e.model.Stream(ctx, messages)
-		if streamErr != nil {
-			err = streamErr
-		} else {
-			defer stream.Close()
-			var chunks []*schema.Message
-			for {
-				chunk, recvErr := stream.Recv()
-				if recvErr == io.EOF {
-					break
-				}
-				if recvErr != nil {
-					err = recvErr
-					break
-				}
-				chunks = append(chunks, chunk)
-				if chunk != nil && chunk.Content != "" {
-					if emitErr := emitContext(ctx, emit, Event{Type: "answer_delta", Text: chunk.Content}); emitErr != nil {
-						err = emitErr
-						break
-					}
-					streamed = true
-				}
-			}
-			if err == nil {
-				answer, err = schema.ConcatMessages(chunks)
-			}
+		systemPrompt, err = e.prompts.Render(ctx, snapshot.WorkspaceID, snapshot.PromptVersionID, map[string]string{})
+		if err != nil {
+			return fmt.Errorf("render pinned system prompt: %w", err)
 		}
 	}
+	// 仅解析快照固定的 Skill 版本，不会跟随后续发布自动漂移。
+	packages, err := e.resolveSkills(ctx, snapshot)
+	if err != nil {
+		return err
+	}
+	if err := emitContext(ctx, emit, Event{Type: "run_started", Data: map[string]string{
+		"conversation_id": req.ConversationID, "agent_version_id": snapshot.ID,
+	}}); err != nil {
+		return err
+	}
+	messages := []*schema.Message{schema.SystemMessage(systemPrompt), schema.UserMessage(req.Message)}
+	answer, streamed, err := e.runPlan(ctx, snapshot, plan, packages, messages, emit)
 	if err != nil {
 		_ = emitContext(ctx, emit, Event{Type: "error", Data: map[string]string{"message": err.Error()}})
 		return fmt.Errorf("generate: %w", err)
@@ -127,6 +100,125 @@ func (e *Engine) ChatStream(ctx context.Context, req ChatRequest, emit Emitter) 
 		return err
 	}
 	return emitContext(ctx, emit, Event{Type: "run_finished", Data: map[string]string{"status": "completed"}})
+}
+
+func (e *Engine) resolveSkills(ctx context.Context, snapshot *AgentSnapshot) ([]platformskill.Package, error) {
+	if len(snapshot.SkillVersionIDs) == 0 {
+		return nil, nil
+	}
+	if e.skills == nil {
+		return nil, fmt.Errorf("skill resolver is required by the pinned snapshot")
+	}
+	packages := make([]platformskill.Package, 0, len(snapshot.SkillVersionIDs))
+	for _, versionID := range snapshot.SkillVersionIDs {
+		version, err := e.skills.Resolve(ctx, snapshot.WorkspaceID, versionID)
+		if err != nil {
+			return nil, fmt.Errorf("resolve pinned skill %s: %w", versionID, err)
+		}
+		packages = append(packages, version.Package)
+	}
+	return packages, nil
+}
+
+// executionPlan 优先解析快照中固定的模型配置版本；旧快照没有版本 ID 时回退到启动时全局模型。
+func (e *Engine) executionPlan(ctx context.Context, snapshot *AgentSnapshot) (*llm.ExecutionPlan, error) {
+	if snapshot.ModelProfileVersionID == "" {
+		if e.model == nil {
+			return nil, fmt.Errorf("chat model is required")
+		}
+		return &llm.ExecutionPlan{Model: e.model}, nil
+	}
+	if e.profiles == nil || e.planner == nil {
+		return nil, fmt.Errorf("model profile resolver and execution planner are required by the pinned snapshot")
+	}
+	profile, err := e.profiles.Resolve(ctx, snapshot.WorkspaceID, snapshot.ModelProfileVersionID)
+	if err != nil {
+		return nil, fmt.Errorf("resolve pinned model profile: %w", err)
+	}
+	plan, err := e.planner.PrepareExecution(ctx, profile)
+	if err != nil {
+		return nil, fmt.Errorf("prepare model execution: %w", err)
+	}
+	return plan, nil
+}
+
+// runPlan 统一执行工具绑定和模型策略：有工具、重试或备用模型时交给 ADK，
+// 否则保留直接 Stream 的轻量路径。
+func (e *Engine) runPlan(
+	ctx context.Context, snapshot *AgentSnapshot, plan *llm.ExecutionPlan,
+	packages []platformskill.Package, messages []*schema.Message, emit Emitter,
+) (*schema.Message, bool, error) {
+	if plan == nil || plan.Model == nil {
+		return nil, false, fmt.Errorf("execution plan model is required")
+	}
+	var bindings []ToolBinding
+	if len(snapshot.ToolVersionIDs) > 0 {
+		if e.tools == nil {
+			return nil, false, fmt.Errorf("tool runtime is required by the pinned agent snapshot")
+		}
+		var err error
+		bindings, err = e.tools.Bind(ctx, snapshot.WorkspaceID, snapshot.ToolVersionIDs)
+		if err != nil {
+			return nil, false, fmt.Errorf("bind pinned tools: %w", err)
+		}
+	}
+	// Skill Runtime 依赖 Agent 已绑定的工具，用于检查 AllowedTools 和构造执行时权限策略。
+	skillRuntime, err := skillrunner.NewRuntime(
+		ctx, packages, bindings, messages[len(messages)-1].Content,
+		func(pkg platformskill.Package) error {
+			return emitContext(ctx, emit, Event{Type: "skill_trigger", Data: map[string]string{"name": pkg.Name}})
+		},
+	)
+	if err != nil {
+		return nil, false, err
+	}
+	if skillRuntime != nil && skillRuntime.ExplicitName != "" {
+		messages[0].Content += fmt.Sprintf("\n\n用户已显式选择 Skill %q；请先调用 skill 工具加载完整说明。", skillRuntime.ExplicitName)
+	}
+	if len(bindings) > 0 || plan.Retry != nil || plan.Failover != nil || skillRuntime != nil {
+		maxSteps := snapshot.MaxSteps
+		if maxSteps <= 0 {
+			maxSteps = 4
+		}
+		var authorize func(string, string) error
+		if skillRuntime != nil {
+			authorize = skillRuntime.Authorize
+		}
+		runner := NewADKRunner(plan.Model, e.tools, snapshot.WorkspaceID).
+			WithModelPolicy(plan.Retry, plan.Failover).
+			WithToolAuthorization(authorize)
+		if skillRuntime != nil {
+			runner.WithHandlers(skillRuntime.Handlers...)
+		}
+		answer, err := runner.Run(ctx, messages, bindings, maxSteps, emit)
+		return answer, false, err
+	}
+
+	stream, err := plan.Model.Stream(ctx, messages)
+	if err != nil {
+		return nil, false, err
+	}
+	defer stream.Close()
+	var chunks []*schema.Message
+	streamed := false
+	for {
+		chunk, recvErr := stream.Recv()
+		if recvErr == io.EOF {
+			break
+		}
+		if recvErr != nil {
+			return nil, streamed, recvErr
+		}
+		chunks = append(chunks, chunk)
+		if chunk != nil && chunk.Content != "" {
+			if err := emitContext(ctx, emit, Event{Type: "answer_delta", Text: chunk.Content}); err != nil {
+				return nil, streamed, err
+			}
+			streamed = true
+		}
+	}
+	answer, err := schema.ConcatMessages(chunks)
+	return answer, streamed, err
 }
 
 func answerDeltas(answer string, maxRunes int) []string {

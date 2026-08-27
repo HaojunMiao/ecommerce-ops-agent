@@ -5,6 +5,9 @@ import (
 	"fmt"
 
 	"github.com/HaojunMiao/ecommerce-ops-agent/internal/domain"
+	"github.com/HaojunMiao/ecommerce-ops-agent/internal/platform/modelconfig"
+	"github.com/HaojunMiao/ecommerce-ops-agent/internal/platform/skill"
+	"github.com/HaojunMiao/ecommerce-ops-agent/internal/runtime/llm"
 	"github.com/HaojunMiao/ecommerce-ops-agent/internal/runtime/tooling"
 	"github.com/cloudwego/eino/components/model"
 )
@@ -28,19 +31,31 @@ type Platform interface {
 
 // AgentSnapshot Runtime使用的解析好的固定Agent配置（此时在运行的版本）
 type AgentSnapshot struct {
-	ID             string
-	AgentID        string
-	WorkspaceID    string
-	SystemPrompt   string
-	MaxSteps       int
-	ToolVersionIDs []string
+	ID                    string
+	AgentID               string
+	WorkspaceID           string
+	SystemPrompt          string
+	MaxSteps              int
+	PromptVersionID       string
+	ModelProfileVersionID string
+	ToolVersionIDs        []string
+	SkillVersionIDs       []string
+}
+
+// executionPlanner 将已固定的模型配置版本转换为本次运行的主模型、重试和故障切换策略。
+type executionPlanner interface {
+	PrepareExecution(context.Context, modelconfig.ProfileVersion) (*llm.ExecutionPlan, error)
 }
 
 // Engine 依赖接口，不与具体的实现绑定
 type Engine struct {
 	platform Platform
 	model    model.BaseChatModel
+	planner  executionPlanner
 	tools    ToolRuntime
+	prompts  PromptRenderer
+	profiles ModelProfileResolver
+	skills   SkillResolver
 }
 
 type ToolRuntime interface {
@@ -48,16 +63,45 @@ type ToolRuntime interface {
 	Execute(ctx context.Context, call tooling.Call) (tooling.Result, error)
 }
 
+// PromptRenderer 是运行时解析固定提示词版本所需的最小接口。
+type PromptRenderer interface {
+	Render(ctx context.Context, workspaceID, versionID string, variables map[string]string) (string, error)
+}
+
+// ModelProfileResolver 是运行时读取固定模型配置版本所需的最小接口。
+type ModelProfileResolver interface {
+	Resolve(ctx context.Context, workspaceID, versionID string) (modelconfig.ProfileVersion, error)
+}
+
+// SkillResolver 仅允许运行时按工作空间和固定版本 ID 解析已发布 Skill。
+type SkillResolver interface {
+	Resolve(ctx context.Context, workspaceID, versionID string) (skill.Version, error)
+}
+
 // New 创建Agent Runtime
 func New(platform Platform, model model.BaseChatModel) *Engine {
-	return &Engine{
+	engine := &Engine{
 		platform: platform,
 		model:    model,
 	}
+	// Gateway 同时实现 executionPlanner；旧的纯 ChatModel 仍可以继续使用。
+	engine.planner, _ = model.(executionPlanner)
+	return engine
 }
 
 func (e *Engine) WithTools(tools ToolRuntime) *Engine {
 	e.tools = tools
+	return e
+}
+
+// WithRuntimeConfig 注入提示词和模型配置的控制面解析能力。
+func (e *Engine) WithRuntimeConfig(prompts PromptRenderer, profiles ModelProfileResolver) *Engine {
+	e.prompts, e.profiles = prompts, profiles
+	return e
+}
+
+func (e *Engine) WithSkills(skills SkillResolver) *Engine {
+	e.skills = skills
 	return e
 }
 

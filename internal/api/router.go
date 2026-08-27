@@ -12,14 +12,20 @@ import (
 	markdown "github.com/HaojunMiao/ecommerce-ops-agent/internal/connector/markdown_folder"
 	"github.com/HaojunMiao/ecommerce-ops-agent/internal/platform/iam"
 	"github.com/HaojunMiao/ecommerce-ops-agent/internal/platform/kb"
+	"github.com/HaojunMiao/ecommerce-ops-agent/internal/platform/modelconfig"
+	"github.com/HaojunMiao/ecommerce-ops-agent/internal/platform/prompt"
+	"github.com/HaojunMiao/ecommerce-ops-agent/internal/platform/skill"
 	platformtool "github.com/HaojunMiao/ecommerce-ops-agent/internal/platform/tool"
 	"github.com/HaojunMiao/ecommerce-ops-agent/internal/runtime/retriever"
 )
 
 type ControlPlane struct {
-	Tools  *platformtool.Registry
-	KBs    *kb.Service
-	Search *retriever.KnowledgeSearch
+	Tools    *platformtool.Registry
+	KBs      *kb.Service
+	Search   *retriever.KnowledgeSearch
+	Prompts  *prompt.Service
+	Profiles *modelconfig.Registry
+	Skills   *skill.Service
 }
 
 func NewRouter(iamService *iam.Service, runtimes ...ChatRuntime) http.Handler {
@@ -213,6 +219,102 @@ func NewRouterWithControlPlane(iamService *iam.Service, runtime ChatRuntime, con
 					writeJSON(w, http.StatusOK, results)
 				})
 			}
+		}
+		if control.Prompts != nil {
+			// 提示词以不可变版本发布，列表和创建均按工作空间隔离。
+			protected.With(middleware.Workspace(iamService)).Get("/api/v1/prompts", func(w http.ResponseWriter, r *http.Request) {
+				writeJSON(w, http.StatusOK, control.Prompts.List(r.Context(), middleware.WorkspaceID(r.Context())))
+			})
+			protected.With(middleware.Workspace(iamService)).Post("/api/v1/prompts", func(w http.ResponseWriter, r *http.Request) {
+				var req struct {
+					Name     string `json:"name"`
+					Category string `json:"category"`
+					Template string `json:"template"`
+				}
+				if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+					http.Error(w, "invalid JSON", http.StatusBadRequest)
+					return
+				}
+				version := prompt.Version{
+					ID:          fmt.Sprintf("prompt-version-%d", time.Now().UnixNano()),
+					WorkspaceID: middleware.WorkspaceID(r.Context()),
+					Name:        req.Name, Category: req.Category, Template: req.Template,
+				}
+				if err := control.Prompts.Publish(r.Context(), version); err != nil {
+					http.Error(w, err.Error(), http.StatusBadRequest)
+					return
+				}
+				writeJSON(w, http.StatusCreated, map[string]any{"prompt": version, "version": version})
+			})
+		}
+		if control.Profiles != nil {
+			// 模型配置版本可包含多个有序部署；本课接口先创建单部署配置。
+			protected.With(middleware.Workspace(iamService)).Get("/api/v1/model-profiles", func(w http.ResponseWriter, r *http.Request) {
+				writeJSON(w, http.StatusOK, control.Profiles.List(r.Context(), middleware.WorkspaceID(r.Context())))
+			})
+			protected.With(middleware.Workspace(iamService)).Post("/api/v1/model-profiles", func(w http.ResponseWriter, r *http.Request) {
+				var req struct {
+					Name              string `json:"name"`
+					ClassificationMax string `json:"classification_max"`
+					Provider          string `json:"provider"`
+					Model             string `json:"model"`
+					BaseURL           string `json:"base_url"`
+					APIKey            string `json:"api_key"`
+				}
+				if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+					http.Error(w, "invalid JSON", http.StatusBadRequest)
+					return
+				}
+				if req.ClassificationMax == "" {
+					req.ClassificationMax = "internal"
+				}
+				if req.Provider == "" {
+					req.Provider = "openai-compatible"
+				}
+				if req.Model == "" {
+					req.Model = "kbot-course-model"
+				}
+				if req.BaseURL == "" {
+					req.BaseURL = "http://mockllm:8081/v1"
+				}
+				profile := modelconfig.ProfileVersion{
+					ID:          fmt.Sprintf("model-profile-version-%d", time.Now().UnixNano()),
+					WorkspaceID: middleware.WorkspaceID(r.Context()),
+					Name:        req.Name, ClassificationMax: req.ClassificationMax,
+					Deployments: []modelconfig.Deployment{{
+						Provider: req.Provider, Model: req.Model, BaseURL: req.BaseURL,
+						APIKey: req.APIKey, HasAPIKey: req.APIKey != "",
+					}},
+				}
+				if err := control.Profiles.Publish(r.Context(), profile); err != nil {
+					http.Error(w, err.Error(), http.StatusBadRequest)
+					return
+				}
+				writeJSON(w, http.StatusCreated, map[string]any{"profile": profile, "version": profile})
+			})
+		}
+		if control.Skills != nil {
+			protected.With(middleware.Workspace(iamService)).Get("/api/v1/skills", func(w http.ResponseWriter, r *http.Request) {
+				writeJSON(w, http.StatusOK, control.Skills.List(r.Context(), middleware.WorkspaceID(r.Context())))
+			})
+			protected.With(middleware.Workspace(iamService)).Post("/api/v1/skills", func(w http.ResponseWriter, r *http.Request) {
+				var req struct {
+					SkillMD string `json:"skill_md"`
+				}
+				if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+					http.Error(w, "invalid JSON", http.StatusBadRequest)
+					return
+				}
+				version, err := control.Skills.Publish(
+					r.Context(), fmt.Sprintf("skill-version-%d", time.Now().UnixNano()),
+					middleware.WorkspaceID(r.Context()), []byte(req.SkillMD),
+				)
+				if err != nil {
+					http.Error(w, err.Error(), http.StatusBadRequest)
+					return
+				}
+				writeJSON(w, http.StatusCreated, map[string]any{"skill": version, "version": version})
+			})
 		}
 		if runtime != nil {
 			protected.With(middleware.Workspace(iamService)).Post("/stream/agents/{agentID}/chat", NewStreamHandler(runtime).ServeHTTP)

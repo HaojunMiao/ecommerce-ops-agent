@@ -16,6 +16,9 @@ import (
 	"github.com/HaojunMiao/ecommerce-ops-agent/internal/platform"
 	"github.com/HaojunMiao/ecommerce-ops-agent/internal/platform/iam"
 	"github.com/HaojunMiao/ecommerce-ops-agent/internal/platform/kb"
+	"github.com/HaojunMiao/ecommerce-ops-agent/internal/platform/modelconfig"
+	"github.com/HaojunMiao/ecommerce-ops-agent/internal/platform/prompt"
+	"github.com/HaojunMiao/ecommerce-ops-agent/internal/platform/skill"
 	platformtool "github.com/HaojunMiao/ecommerce-ops-agent/internal/platform/tool"
 	"github.com/HaojunMiao/ecommerce-ops-agent/internal/runtime/engine"
 	"github.com/HaojunMiao/ecommerce-ops-agent/internal/runtime/llm"
@@ -60,6 +63,10 @@ func main() {
 	knowledgeBases := kb.NewService()
 	// 检索服务通过 DocumentSource 接口读取 knowledgeBases 中已经切好的文档。
 	knowledgeSearch := retriever.NewKnowledgeSearch(knowledgeBases)
+	// 第 12 课新增的提示词和模型配置版本注册表。
+	prompts := prompt.NewService()
+	profiles := modelconfig.NewRegistry([]byte(cfg.JWTSecret))
+	skills := skill.NewService()
 	sandboxClient, err := sandbox.NewClient(cfg.SandboxRunnerURL, cfg.SandboxRunnerToken)
 	if err != nil {
 		log.Fatalf("create sandbox runner client: %v", err)
@@ -86,16 +93,15 @@ func main() {
 		body, marshalErr := json.Marshal(results)
 		return tooling.Result{StatusCode: http.StatusOK, Body: body}, marshalErr
 	})
-	runtime.WithTools(toolExecutor)
+	runtime.WithTools(toolExecutor).WithRuntimeConfig(prompts, profiles).WithSkills(skills)
 
 	// 创建HTTP server，监听8080端口
 	// 客户端必须在五秒内发送完 HTTP Header，否则服务端终止读取。这可以避免客户端长时间占用连接
 	server := &http.Server{
 		Addr: cfg.HTTPAddr,
 		Handler: api.NewRouterWithControlPlane(iamService, runtime, api.ControlPlane{
-			Tools:  toolRegistry,
-			KBs:    knowledgeBases,
-			Search: knowledgeSearch,
+			Tools: toolRegistry, KBs: knowledgeBases, Search: knowledgeSearch,
+			Prompts: prompts, Profiles: profiles, Skills: skills,
 		}),
 		ReadHeaderTimeout: 5 * time.Second,
 	}

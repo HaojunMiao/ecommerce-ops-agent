@@ -31,10 +31,34 @@ type ADKRunner struct {
 	model       model.BaseChatModel
 	executor    ToolExecutor
 	workspaceID string
+	retry       *adk.ModelRetryConfig
+	failover    *adk.ModelFailoverConfig[*schema.Message]
+	handlers    []adk.ChatModelAgentMiddleware
+	authorize   func(name, arguments string) error
 }
 
 func NewADKRunner(chatModel model.BaseChatModel, executor ToolExecutor, workspaceID string) *ADKRunner {
 	return &ADKRunner{model: chatModel, executor: executor, workspaceID: workspaceID}
+}
+
+// WithModelPolicy 把模型配置版本解析出的重试与故障切换策略交给 Eino ADK。
+func (r *ADKRunner) WithModelPolicy(
+	retry *adk.ModelRetryConfig, failover *adk.ModelFailoverConfig[*schema.Message],
+) *ADKRunner {
+	r.retry, r.failover = retry, failover
+	return r
+}
+
+// WithHandlers 注入 Eino Skill 等 Agent Middleware。
+func (r *ADKRunner) WithHandlers(handlers ...adk.ChatModelAgentMiddleware) *ADKRunner {
+	r.handlers = append(r.handlers, handlers...)
+	return r
+}
+
+// WithToolAuthorization 注入工具执行前的 Skill 权限校验。
+func (r *ADKRunner) WithToolAuthorization(authorize func(name, arguments string) error) *ADKRunner {
+	r.authorize = authorize
+	return r
 }
 
 // 执行一次完整的、支持工具调用的 ReAct Agent 运行，最后返回模型的最终回答。
@@ -46,9 +70,9 @@ func NewADKRunner(chatModel model.BaseChatModel, executor ToolExecutor, workspac
 func (r *ADKRunner) Run(
 	ctx context.Context, messages []*schema.Message, bindings []ToolBinding, maxSteps int, emit Emitter,
 ) (*schema.Message, error) {
-	// ReAct 同时需要“做决定的模型”和“执行动作的工具执行器”。
-	if r.model == nil || r.executor == nil {
-		return nil, fmt.Errorf("chat model and tool executor are required")
+	// 模型始终必需；只有本次真的绑定了工具时，才必须提供工具执行器。
+	if r.model == nil || (len(bindings) > 0 && r.executor == nil) {
+		return nil, fmt.Errorf("chat model and required tool executor are required")
 	}
 	if maxSteps <= 0 {
 		return nil, fmt.Errorf("max steps must be positive")
@@ -77,13 +101,16 @@ func (r *ADKRunner) Run(
 		Model:       r.model,
 		ToolsConfig: adk.ToolsConfig{
 			ToolsNodeConfig: compose.ToolsNodeConfig{
-				Tools:               tools,
+				Tools: tools,
 				// 顺序执行工具，避免并行工具调用产生难以控制的副作用和顺序问题。
 				ExecuteSequentially: true,
 				// 中间件在每次工具执行前后发送 tool_started/tool_finished 事件。
-				ToolCallMiddlewares: []compose.ToolMiddleware{toolEventMiddleware(emit)},
+				ToolCallMiddlewares: []compose.ToolMiddleware{toolEventMiddleware(emit, r.authorize)},
 			}},
-		MaxIterations: maxSteps,
+		MaxIterations:       maxSteps,
+		Handlers:            r.handlers,
+		ModelRetryConfig:    r.retry,
+		ModelFailoverConfig: r.failover,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("create Eino ChatModelAgent: %w", err)
@@ -113,7 +140,7 @@ func (r *ADKRunner) Run(
 		// Assistant 消息中仍带 ToolCalls，表示模型还在请求执行工具，并不是最终回答。
 		// 最终回答必须来自 Assistant，并且不再包含任何 ToolCall。
 		if message != nil && message.Role == schema.Assistant && len(message.ToolCalls) == 0 {
-			answer = message  // 最终回答赋值给answer
+			answer = message // 最终回答赋值给answer
 		}
 	}
 	if answer == nil {
@@ -161,7 +188,7 @@ func (t *bindingTool) InvokableRun(ctx context.Context, arguments string, _ ...e
 
 // toolEventMiddleware 包裹每次工具调用：执行前后向 SSE 链路发送事件，
 // 同时把 Eino 的 CallID 放进 Context，供 bindingTool 构造幂等键。
-func toolEventMiddleware(emit Emitter) compose.ToolMiddleware {
+func toolEventMiddleware(emit Emitter, authorize func(name, arguments string) error) compose.ToolMiddleware {
 	return compose.ToolMiddleware{Invokable: func(next compose.InvokableToolEndpoint) compose.InvokableToolEndpoint {
 		return func(ctx context.Context, input *compose.ToolInput) (*compose.ToolOutput, error) {
 			if emit != nil {
@@ -169,8 +196,15 @@ func toolEventMiddleware(emit Emitter) compose.ToolMiddleware {
 					return nil, err
 				}
 			}
-			// next 才是被包装的真实工具调用。
-			output, err := next(context.WithValue(ctx, toolCallIDKey{}, input.CallID), input)
+			// 不只依赖“模型能看到哪些工具”：执行前再校验一次，防止越权调用。
+			var output *compose.ToolOutput
+			var err error
+			if authorizeErr := authorizeTool(authorize, input); authorizeErr != nil {
+				output = &compose.ToolOutput{Result: fmt.Sprintf(`{"error":%q}`, authorizeErr.Error())}
+			} else {
+				// next 才是被包装的真实工具调用。
+				output, err = next(context.WithValue(ctx, toolCallIDKey{}, input.CallID), input)
+			}
 			if err != nil {
 				// 把工具错误转换成一段工具结果并清空 error，让 ReAct 循环继续，
 				// 这样模型有机会看到错误、调整参数或向用户解释，而不是让整个运行立即中断。
@@ -184,4 +218,11 @@ func toolEventMiddleware(emit Emitter) compose.ToolMiddleware {
 			return output, err
 		}
 	}}
+}
+
+func authorizeTool(authorize func(name, arguments string) error, input *compose.ToolInput) error {
+	if authorize == nil {
+		return nil
+	}
+	return authorize(input.Name, input.Arguments)
 }
