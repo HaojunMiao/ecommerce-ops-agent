@@ -11,8 +11,11 @@ import (
 	einotool "github.com/cloudwego/eino/components/tool"
 	"github.com/cloudwego/eino/compose"
 	"github.com/cloudwego/eino/schema"
+	"go.opentelemetry.io/otel/attribute"
 
+	courseotel "github.com/HaojunMiao/ecommerce-ops-agent/internal/infrastructure/otel"
 	"github.com/HaojunMiao/ecommerce-ops-agent/internal/platform/approval"
+	"github.com/HaojunMiao/ecommerce-ops-agent/internal/platform/audit"
 	"github.com/HaojunMiao/ecommerce-ops-agent/internal/runtime/tooling"
 )
 
@@ -74,6 +77,8 @@ type ADKRunner struct {
 	runID        string
 	activeSkill  func() string
 	restoreSkill func(string) error
+	audit        AuditSink
+	actorID      string
 }
 
 func NewADKRunner(chatModel model.BaseChatModel, executor ToolExecutor, workspaceID string) *ADKRunner {
@@ -111,9 +116,14 @@ func (r *ADKRunner) WithSkillState(active func() string, restore func(string) er
 	return r
 }
 
+func (r *ADKRunner) WithAudit(sink AuditSink, actorID string) *ADKRunner {
+	r.audit, r.actorID = sink, actorID
+	return r
+}
+
 // AwaitingApprovalError 不是运行失败，而是通知上层本次运行已安全暂停。
 type AwaitingApprovalError struct {
-	ApprovalID, ToolName, ToolCallID, ToolVersionID string
+	ApprovalID, ConversationID, ToolName, ToolCallID, ToolVersionID string
 }
 
 func (e *AwaitingApprovalError) Error() string {
@@ -196,7 +206,10 @@ func (r *ADKRunner) newAgent(
 	byName := make(map[string]ToolBinding, len(bindings))
 	for _, binding := range bindings {
 		byName[binding.Name] = binding
-		tools = append(tools, &bindingTool{binding: binding, executor: r.executor, workspaceID: r.workspaceID})
+		tools = append(tools, &bindingTool{
+			binding: binding, executor: r.executor, workspaceID: r.workspaceID,
+			audit: r.audit, actorID: r.actorID, runID: r.runID,
+		})
 	}
 	return adk.NewChatModelAgent(ctx, &adk.ChatModelAgentConfig{
 		Name:        "course_agent",
@@ -385,6 +398,9 @@ type bindingTool struct {
 	binding     ToolBinding
 	executor    ToolExecutor
 	workspaceID string
+	audit       AuditSink
+	actorID     string
+	runID       string
 }
 
 // Info 返回给 Eino/大模型的工具说明，包括工具名、描述和参数 JSON Schema。
@@ -402,11 +418,33 @@ func (t *bindingTool) Info(context.Context) (*schema.ToolInfo, error) {
 // 对 Eino 而言它只是一个可调用工具；至于底层是 HTTP 还是沙箱，由 Executor 决定。
 func (t *bindingTool) InvokableRun(ctx context.Context, arguments string, _ ...einotool.Option) (string, error) {
 	callID, _ := ctx.Value(toolCallIDKey{}).(string)
-	result, err := t.executor.Execute(ctx, tooling.Call{
+	operation := "tool.execute"
+	if t.binding.SourceType == "code_execution" {
+		operation = "sandbox.execute"
+	}
+	toolContext, finish := courseotel.StartOperation(ctx, operation,
+		attribute.String("gen_ai.tool.name", t.binding.Name),
+		attribute.String("kbot.tool.version.id", t.binding.VersionID),
+		attribute.String("kbot.tool.call.id", callID),
+	)
+	result, err := t.executor.Execute(toolContext, tooling.Call{
 		WorkspaceID: t.workspaceID, ToolVersionID: t.binding.VersionID,
 		// 同一个 Eino ToolCall 使用稳定的 CallID 构造幂等键，避免重试时重复产生业务副作用。
 		Arguments: []byte(arguments), IdempotencyKey: "react:" + callID,
 	})
+	finish(err)
+	if t.audit != nil && t.actorID != "" {
+		data := map[string]any{
+			"conversation_id": t.runID, "tool_call_id": callID, "status_code": result.StatusCode,
+		}
+		if err != nil {
+			data["failed"] = true
+		}
+		_, _ = t.audit.Append(context.WithoutCancel(ctx), audit.Event{
+			WorkspaceID: t.workspaceID, ActorID: t.actorID, Action: operation,
+			ResourceID: t.binding.VersionID, Data: data,
+		})
+	}
 	if err != nil {
 		return "", err
 	}

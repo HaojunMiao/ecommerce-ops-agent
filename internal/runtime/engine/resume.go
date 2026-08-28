@@ -7,6 +7,7 @@ import (
 	"fmt"
 
 	"github.com/HaojunMiao/ecommerce-ops-agent/internal/platform/approval"
+	"github.com/HaojunMiao/ecommerce-ops-agent/internal/platform/audit"
 	platformskill "github.com/HaojunMiao/ecommerce-ops-agent/internal/platform/skill"
 	"github.com/HaojunMiao/ecommerce-ops-agent/internal/runtime/skillrunner"
 )
@@ -49,6 +50,9 @@ func (e *Engine) ResumeApproved(ctx context.Context, request *approval.Request, 
 	if err != nil {
 		return err
 	}
+	// 审批恢复后的模型调用同样消费配额，不能成为绕过 Guard 的旁路。
+	plan = e.guardExecutionPlan(plan, request.WorkspaceID)
+	plan = observeExecutionPlan(plan)
 	packages, err := e.resolveSkills(ctx, snapshot)
 	if err != nil {
 		return err
@@ -64,6 +68,12 @@ func (e *Engine) ResumeApproved(ctx context.Context, request *approval.Request, 
 		userInput = "/skill " + activeSkillName
 	}
 	skillRuntime, err := skillrunner.NewRuntime(ctx, packages, bindings, userInput, func(pkg platformskill.Package) error {
+		if e.audit != nil && request.DecidedBy != "" {
+			_, _ = e.audit.Append(context.WithoutCancel(ctx), audit.Event{
+				WorkspaceID: request.WorkspaceID, ActorID: request.DecidedBy, Action: "skill.triggered",
+				ResourceID: pkg.Name, Data: map[string]any{"conversation_id": request.RunID, "resumed": true},
+			})
+		}
 		return emitContext(ctx, emit, Event{Type: "skill_trigger", Data: map[string]string{"name": pkg.Name, "resumed": "true"}})
 	})
 	if err != nil {
@@ -72,7 +82,8 @@ func (e *Engine) ResumeApproved(ctx context.Context, request *approval.Request, 
 	var authorize func(string, string) error
 	runner := NewADKRunner(plan.Model, e.tools, request.WorkspaceID).
 		WithModelPolicy(plan.Retry, plan.Failover).
-		WithApprovals(e.approvals, request.RunID)
+		WithApprovals(e.approvals, request.RunID).
+		WithAudit(e.audit, request.DecidedBy)
 	if skillRuntime != nil {
 		if err := skillRuntime.Restore(activeSkillName); err != nil {
 			return err
@@ -99,6 +110,16 @@ func (e *Engine) ResumeApproved(ctx context.Context, request *approval.Request, 
 			return emitContext(ctx, emit, Event{Type: "run_finished", Data: map[string]string{"status": "awaiting_approval"}})
 		}
 		return fmt.Errorf("resume Eino approval checkpoint: %w", err)
+	}
+	if e.guard != nil {
+		decision, guardErr := e.guard.Evaluate(ctx, request.WorkspaceID, "on_output", answer.Content)
+		if guardErr != nil {
+			return fmt.Errorf("evaluate resumed output guard: %w", guardErr)
+		}
+		if !decision.Allowed {
+			return fmt.Errorf("resumed output blocked by guard")
+		}
+		answer.Content = decision.SanitizedText
 	}
 	if history, ok := e.platform.(ConversationMessageStore); ok {
 		if err := history.AppendMessage(ctx, request.WorkspaceID, request.RunID, "assistant", answer.Content); err != nil {

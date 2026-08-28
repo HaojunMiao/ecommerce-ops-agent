@@ -46,6 +46,7 @@ type SandboxRunner interface {
 type Binding struct {
 	Name            string
 	VersionID       string
+	SourceType      string
 	Info            *schema.ToolInfo
 	RequiresNetwork bool
 	KBScoped        bool
@@ -170,6 +171,51 @@ func (e *Executor) Execute(ctx context.Context, call Call) (Result, error) {
 		// 参数已经通过统一 JSON Schema 校验，内部工具直接复用解析后的 map。
 		return handler(ctx, call.WorkspaceID, arguments)
 	}
+	if version.SourceType == "mcp_server" {
+		endpoint, err := url.Parse(version.Endpoint)
+		if err != nil {
+			return Result{}, fmt.Errorf("parse MCP endpoint: %w", err)
+		}
+		if err := e.validateEndpoint(endpoint); err != nil {
+			return Result{}, err
+		}
+		toolName, _ := arguments["tool_name"].(string)
+		toolArguments, _ := arguments["arguments"].(map[string]any)
+		if strings.TrimSpace(toolName) == "" {
+			return Result{}, fmt.Errorf("MCP tool requires tool_name")
+		}
+		headers, err := toolAuthHeaders(version.AuthConfig)
+		if err != nil {
+			return Result{}, err
+		}
+		payload, err := callMCPTool(ctx, endpoint.String(), toolName, toolArguments, headers, e.client)
+		if err != nil {
+			return Result{}, err
+		}
+		return Result{StatusCode: http.StatusOK, Body: payload}, nil
+	}
+	if version.SourceType == "a2a" {
+		message, _ := arguments["message"].(string)
+		if message == "" {
+			message, _ = arguments["text"].(string)
+		}
+		if strings.TrimSpace(message) == "" {
+			return Result{}, fmt.Errorf("A2A tool requires a message or text argument")
+		}
+		remoteVersionID, _ := arguments["agent_version_id"].(string)
+		hosts := make([]string, 0, len(e.allowedHosts))
+		for host := range e.allowedHosts {
+			hosts = append(hosts, host)
+		}
+		client := NewA2AClient(version.Endpoint, hosts...)
+		client.client = e.client
+		result, err := client.Send(ctx, remoteVersionID, message)
+		if err != nil {
+			return Result{}, err
+		}
+		body, err := json.Marshal(result)
+		return Result{StatusCode: http.StatusOK, Body: body}, err
+	}
 	endpoint, err := url.Parse(version.Endpoint)
 	if err != nil {
 		return Result{}, fmt.Errorf("parse tool endpoint: %w", err)
@@ -258,6 +304,7 @@ func (e *Executor) Bind(ctx context.Context, workspaceID string, versionIDs []st
 		}
 		bindings = append(bindings, Binding{
 			Name: version.Name, VersionID: version.ID,
+			SourceType:      version.SourceType,
 			Info:            &schema.ToolInfo{Name: version.Name, Desc: version.Description, ParamsOneOf: schema.NewParamsOneOfByJSONSchema(params)},
 			RequiresNetwork: version.SourceType == "rest_api" || version.SourceType == "mcp_server" || version.SourceType == "a2a" || version.SourceType == "",
 			KBScoped:        version.SourceType == "internal_sdk" && version.Endpoint == "search_knowledge_base",

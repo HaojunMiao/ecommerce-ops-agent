@@ -136,6 +136,24 @@ func (s *Service) listReadyPostgres(ctx context.Context, limit int) ([]Request, 
 	return result, rows.Err()
 }
 
+func (s *Service) listPostgres(ctx context.Context, workspaceID string) ([]Request, error) {
+	rows, err := s.pool.Query(ctx, `SELECT `+approvalColumns+` FROM approval_requests
+		WHERE workspace_id=$1 ORDER BY created_at,id`, workspaceID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	result := make([]Request, 0)
+	for rows.Next() {
+		request, err := scanApproval(rows)
+		if err != nil {
+			return nil, err
+		}
+		result = append(result, *request)
+	}
+	return result, rows.Err()
+}
+
 func scanApproval(row approvalRow) (*Request, error) {
 	var request Request
 	var lease pgtype.Timestamptz

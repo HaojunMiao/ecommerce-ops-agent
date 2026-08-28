@@ -149,6 +149,28 @@ func (s *Service) CreateConversation(ctx context.Context, workspaceID, agentID, 
 	return &conversation, nil
 }
 
+// CreateConversationForVersion 为离线评测直接固定目标版本，避免评测期间环境指针变化。
+// 每条用例都会创建独立会话，防止前一条用例的历史消息影响下一条结果。
+func (s *Service) CreateConversationForVersion(ctx context.Context, workspaceID, agentID, versionID, userID string) (*domain.Conversation, error) {
+	if s.postgres != nil {
+		return s.postgres.createConversationForVersion(ctx, workspaceID, agentID, versionID, userID)
+	}
+	s.mu.RLock()
+	version, ok := s.versions[versionID]
+	s.mu.RUnlock()
+	if !ok || version.WorkspaceID != workspaceID || version.AgentID != agentID {
+		return nil, fmt.Errorf("agent version %s not found", versionID)
+	}
+	conversation := domain.Conversation{
+		ID: fmt.Sprintf("conversation-%d", s.sequence.Add(1)), WorkspaceID: workspaceID,
+		AgentID: agentID, AgentVersionID: versionID, UserID: userID, CreatedAt: time.Now().UTC(),
+	}
+	s.mu.Lock()
+	s.conversations[conversation.ID] = conversation
+	s.mu.Unlock()
+	return &conversation, nil
+}
+
 func (s *Service) Snapshot(ctx context.Context, workspaceID, versionID string) (*engine.AgentSnapshot, error) {
 	if s.postgres != nil {
 		return s.postgres.snapshot(ctx, workspaceID, versionID)
@@ -283,6 +305,24 @@ func (s *Service) ConversationDetail(ctx context.Context, workspaceID, userID, c
 	}
 	messages, err := s.ListMessages(ctx, workspaceID, conversationID)
 	return conversation, messages, err
+}
+
+// ResolveVersion 在创建 Team 版本时解析环境当前指向的 Agent 版本，
+// 之后 Team 快照始终使用这个不可变版本，不随环境指针继续变化。
+func (s *Service) ResolveVersion(ctx context.Context, workspaceID, agentID, environment string) (string, error) {
+	if environment == "" {
+		environment = "dev"
+	}
+	if s.postgres != nil {
+		return s.postgres.resolveVersion(ctx, workspaceID, agentID, environment)
+	}
+	s.mu.RLock()
+	versionID, ok := s.promotions[promotionKey(workspaceID, agentID, environment)]
+	s.mu.RUnlock()
+	if !ok {
+		return "", fmt.Errorf("agent %s has no version promoted to %s", agentID, environment)
+	}
+	return versionID, nil
 }
 
 func promotionKey(workspaceID, agentID, environment string) string {

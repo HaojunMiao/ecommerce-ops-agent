@@ -12,16 +12,25 @@ import (
 
 	"github.com/HaojunMiao/ecommerce-ops-agent/internal/api"
 	"github.com/HaojunMiao/ecommerce-ops-agent/internal/config"
+	courseotel "github.com/HaojunMiao/ecommerce-ops-agent/internal/infrastructure/otel"
 	postgresinfra "github.com/HaojunMiao/ecommerce-ops-agent/internal/infrastructure/postgres"
+	"github.com/HaojunMiao/ecommerce-ops-agent/internal/integration"
+	"github.com/HaojunMiao/ecommerce-ops-agent/internal/integration/lark"
+	"github.com/HaojunMiao/ecommerce-ops-agent/internal/integration/replay"
+	"github.com/HaojunMiao/ecommerce-ops-agent/internal/integration/webhook"
 	"github.com/HaojunMiao/ecommerce-ops-agent/internal/platform/agent"
 	"github.com/HaojunMiao/ecommerce-ops-agent/internal/platform/approval"
+	"github.com/HaojunMiao/ecommerce-ops-agent/internal/platform/audit"
+	platformeval "github.com/HaojunMiao/ecommerce-ops-agent/internal/platform/eval"
 	"github.com/HaojunMiao/ecommerce-ops-agent/internal/platform/iam"
 	"github.com/HaojunMiao/ecommerce-ops-agent/internal/platform/kb"
 	"github.com/HaojunMiao/ecommerce-ops-agent/internal/platform/modelconfig"
 	"github.com/HaojunMiao/ecommerce-ops-agent/internal/platform/prompt"
 	"github.com/HaojunMiao/ecommerce-ops-agent/internal/platform/skill"
+	platformteam "github.com/HaojunMiao/ecommerce-ops-agent/internal/platform/team"
 	platformtool "github.com/HaojunMiao/ecommerce-ops-agent/internal/platform/tool"
 	"github.com/HaojunMiao/ecommerce-ops-agent/internal/runtime/engine"
+	"github.com/HaojunMiao/ecommerce-ops-agent/internal/runtime/guard"
 	"github.com/HaojunMiao/ecommerce-ops-agent/internal/runtime/llm"
 	"github.com/HaojunMiao/ecommerce-ops-agent/internal/runtime/retriever"
 	"github.com/HaojunMiao/ecommerce-ops-agent/internal/runtime/sandbox"
@@ -36,6 +45,17 @@ func main() {
 	if err := cfg.Validate(); err != nil {
 		log.Fatal(err)
 	}
+	shutdownTracing, err := courseotel.Setup(context.Background(), "ecommerce-ops-agent")
+	if err != nil {
+		log.Fatalf("configure tracing: %v", err)
+	}
+	defer func() {
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := shutdownTracing(shutdownCtx); err != nil {
+			log.Printf("shutdown tracing: %v", err)
+		}
+	}()
 
 	// 启动时先建立并验证 PostgreSQL 连接；数据库不可用时直接失败，
 	// 避免服务看似启动成功、实际请求才不断报持久化错误。
@@ -56,6 +76,7 @@ func main() {
 
 	// Agent 控制面同时实现 Engine 所需的会话与快照读取接口。
 	agents := agent.NewPostgresService(pool)
+	teams := platformteam.NewPostgresService(agents, pool)
 	runtime := engine.New(agents, gateway)
 	toolRegistry := platformtool.NewRegistry()
 	// 第 10 课使用进程内存保存知识库和文档，服务重启后数据会丢失。
@@ -67,6 +88,12 @@ func main() {
 	profiles := modelconfig.NewRegistry([]byte(cfg.JWTSecret))
 	skills := skill.NewService()
 	approvals := approval.NewPostgresService(pool)
+	guards := guard.NewService(guard.NewPipeline(
+		guard.MaxLengthRule{MaxRunes: 8000}, guard.InjectionRule{}, guard.PIIRule{},
+	))
+	auditLedger := audit.NewPostgresLedger(pool)
+	evaluator := platformeval.NewService()
+	evalData := platformeval.NewPostgresCatalog(pool)
 	sandboxClient, err := sandbox.NewClient(cfg.SandboxRunnerURL, cfg.SandboxRunnerToken)
 	if err != nil {
 		log.Fatalf("create sandbox runner client: %v", err)
@@ -93,18 +120,33 @@ func main() {
 		body, marshalErr := json.Marshal(results)
 		return tooling.Result{StatusCode: http.StatusOK, Body: body}, marshalErr
 	})
-	runtime.WithTools(toolExecutor).WithRuntimeConfig(prompts, profiles).WithSkills(skills).WithApprovals(approvals)
+	runtime.WithTools(toolExecutor).WithRuntimeConfig(prompts, profiles).WithSkills(skills).
+		WithApprovals(approvals).WithGuard(guards).WithAudit(auditLedger)
 	approvalWorker := engine.NewApprovalWorker(approvals, runtime, "course-server-worker")
+	replayGuard := replay.NewPostgres(pool, replay.DefaultWindow)
+	channelConsumer := integration.NewRuntimeConsumer(
+		agents, runtime, cfg.ChannelWorkspaceID, cfg.ChannelAgentID, cfg.ChannelAgentEnv,
+		func(source, eventID, answer string) {
+			log.Printf("channel answer source=%s event_id=%s answer=%q", source, eventID, answer)
+		},
+	)
 
 	// 创建HTTP server，监听8080端口
 	// 客户端必须在五秒内发送完 HTTP Header，否则服务端终止读取。这可以避免客户端长时间占用连接
 	server := &http.Server{
 		Addr: cfg.HTTPAddr,
 		Handler: api.NewRouterWithControlPlane(iamService, runtime, api.ControlPlane{
-			Agents: agents, Approvals: approvals, Tools: toolRegistry, KBs: knowledgeBases, Search: knowledgeSearch,
-			Prompts: prompts, Profiles: profiles, Skills: skills, ApprovalWorker: approvalWorker,
+			Agents: agents, Approvals: approvals, Audit: auditLedger,
+			Tools: toolRegistry, KBs: knowledgeBases, Search: knowledgeSearch,
+			Prompts: prompts, Profiles: profiles, Skills: skills, Guard: guards,
+			Evaluator: evaluator, EvalData: evalData, Teams: teams,
+			Webhook:        webhook.NewHandlerWithReplay(cfg.WebhookSecret, replayGuard, channelConsumer.Callback("webhook")),
+			Lark:           lark.NewHandlerWithReplay(cfg.LarkEncryptKey, replayGuard, channelConsumer.Callback("lark")),
+			ApprovalWorker: approvalWorker,
 		}),
 		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       15 * time.Second,
+		IdleTimeout:       60 * time.Second,
 	}
 
 	// 优雅退出逻辑

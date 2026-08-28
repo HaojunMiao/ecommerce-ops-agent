@@ -88,6 +88,16 @@ func (s *postgresStore) promote(ctx context.Context, workspaceID, agentID, envir
 	return nil
 }
 
+func (s *postgresStore) resolveVersion(ctx context.Context, workspaceID, agentID, environment string) (string, error) {
+	var versionID string
+	err := s.pool.QueryRow(ctx, `SELECT agent_version_id FROM agent_promotions
+		WHERE workspace_id=$1 AND agent_id=$2 AND environment=$3`, workspaceID, agentID, environment).Scan(&versionID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", fmt.Errorf("agent %s has no version promoted to %s", agentID, environment)
+	}
+	return versionID, err
+}
+
 func (s *postgresStore) createConversation(ctx context.Context, workspaceID, agentID, environment, userID string) (*domain.Conversation, error) {
 	var conversation domain.Conversation
 	err := s.pool.QueryRow(ctx, `INSERT INTO conversations (id,workspace_id,agent_id,agent_version_id,user_id)
@@ -100,6 +110,24 @@ func (s *postgresStore) createConversation(ctx context.Context, workspaceID, age
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, fmt.Errorf("agent %s has no version promoted to %s", agentID, environment)
+	}
+	return &conversation, err
+}
+
+func (s *postgresStore) createConversationForVersion(ctx context.Context, workspaceID, agentID, versionID, userID string) (*domain.Conversation, error) {
+	var conversation domain.Conversation
+	err := s.pool.QueryRow(ctx, `INSERT INTO conversations
+		(id,workspace_id,agent_id,agent_version_id,user_id)
+		SELECT gen_random_uuid()::text,$1,$2,v.id,$4 FROM agent_versions v
+		WHERE v.workspace_id=$1 AND v.agent_id=$2 AND v.id=$3
+		RETURNING id,workspace_id,agent_id,agent_version_id,user_id,created_at`,
+		workspaceID, agentID, versionID, userID,
+	).Scan(
+		&conversation.ID, &conversation.WorkspaceID, &conversation.AgentID,
+		&conversation.AgentVersionID, &conversation.UserID, &conversation.CreatedAt,
+	)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, fmt.Errorf("agent version %s not found", versionID)
 	}
 	return &conversation, err
 }

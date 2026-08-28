@@ -1,9 +1,11 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -14,26 +16,77 @@ import (
 	"github.com/HaojunMiao/ecommerce-ops-agent/internal/domain"
 	"github.com/HaojunMiao/ecommerce-ops-agent/internal/platform/agent"
 	"github.com/HaojunMiao/ecommerce-ops-agent/internal/platform/approval"
+	"github.com/HaojunMiao/ecommerce-ops-agent/internal/platform/audit"
+	platformeval "github.com/HaojunMiao/ecommerce-ops-agent/internal/platform/eval"
 	"github.com/HaojunMiao/ecommerce-ops-agent/internal/platform/iam"
 	"github.com/HaojunMiao/ecommerce-ops-agent/internal/platform/kb"
 	"github.com/HaojunMiao/ecommerce-ops-agent/internal/platform/modelconfig"
 	"github.com/HaojunMiao/ecommerce-ops-agent/internal/platform/prompt"
 	"github.com/HaojunMiao/ecommerce-ops-agent/internal/platform/skill"
+	platformteam "github.com/HaojunMiao/ecommerce-ops-agent/internal/platform/team"
 	platformtool "github.com/HaojunMiao/ecommerce-ops-agent/internal/platform/tool"
 	"github.com/HaojunMiao/ecommerce-ops-agent/internal/runtime/engine"
+	"github.com/HaojunMiao/ecommerce-ops-agent/internal/runtime/guard"
 	"github.com/HaojunMiao/ecommerce-ops-agent/internal/runtime/retriever"
 )
 
 type ControlPlane struct {
 	Agents         *agent.Service
 	Approvals      *approval.Service
+	Audit          *audit.Ledger
 	Tools          *platformtool.Registry
 	KBs            *kb.Service
 	Search         *retriever.KnowledgeSearch
 	Prompts        *prompt.Service
 	Profiles       *modelconfig.Registry
 	Skills         *skill.Service
+	Guard          *guard.Service
+	Evaluator      *platformeval.Service
+	EvalData       *platformeval.Catalog
+	Teams          *platformteam.Service
+	Webhook        http.Handler
+	Lark           http.Handler
 	ApprovalWorker interface{ Wake() }
+}
+
+// runtimeEvalAgent 把现有 ChatRuntime 适配为评测模块所需的最小 Agent 接口。
+// 每次 Run 都为指定版本新建独立会话，并从运行事件中收集最终答案和工具轨迹。
+type runtimeEvalAgent struct {
+	runtime     ChatRuntime
+	agents      *agent.Service
+	workspaceID string
+	userID      string
+	agentID     string
+	versionID   string
+}
+
+func (a runtimeEvalAgent) Run(ctx context.Context, input string) (platformeval.Output, error) {
+	conversation, err := a.agents.CreateConversationForVersion(
+		ctx, a.workspaceID, a.agentID, a.versionID, "eval:"+a.userID,
+	)
+	if err != nil {
+		return platformeval.Output{}, err
+	}
+	output := platformeval.Output{}
+	err = a.runtime.ChatStream(ctx, engine.ChatRequest{
+		ConversationID: conversation.ID,
+		WorkspaceID:    a.workspaceID,
+		UserID:         "eval:" + a.userID,
+		Message:        input,
+	}, func(event engine.Event) error {
+		if event.Type == "answer_done" {
+			output.Content = event.Text
+		}
+		if event.Type == "tool_finished" {
+			if data, ok := event.Data.(map[string]any); ok {
+				if name, ok := data["name"].(string); ok {
+					output.Tools = append(output.Tools, name)
+				}
+			}
+		}
+		return nil
+	})
+	return output, err
 }
 
 // agentConfigRequest 是创建 Agent 或发布新版本时提交的运行配置。
@@ -80,6 +133,13 @@ func NewRouterWithControlPlane(iamService *iam.Service, runtime ChatRuntime, con
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("ok"))
 	})
+	// 外部渠道使用各自的签名认证，不能放进要求 JWT 的 protected 路由。
+	if control.Webhook != nil {
+		router.Method(http.MethodPost, "/api/v1/integrations/webhook", control.Webhook)
+	}
+	if control.Lark != nil {
+		router.Method(http.MethodPost, "/api/v1/integrations/lark/events", control.Lark)
+	}
 
 	// 平台相关的一些API（注册、登录、列出用户有权限的workspace）
 	// 注册
@@ -133,6 +193,7 @@ func NewRouterWithControlPlane(iamService *iam.Service, runtime ChatRuntime, con
 				"role":         middleware.WorkspaceRole(r.Context()),
 			})
 		})
+		registerTeamRoutes(protected, iamService, runtime, control)
 		if control.Agents != nil {
 			protected.With(middleware.Workspace(iamService)).Get("/api/v1/agents", func(w http.ResponseWriter, r *http.Request) {
 				writeJSON(w, http.StatusOK, control.Agents.ListAgents(r.Context(), middleware.WorkspaceID(r.Context())))
@@ -208,7 +269,15 @@ func NewRouterWithControlPlane(iamService *iam.Service, runtime ChatRuntime, con
 					http.Error(w, "invalid JSON", http.StatusBadRequest)
 					return
 				}
-				if err := control.Agents.Promote(r.Context(), middleware.WorkspaceID(r.Context()), chi.URLParam(r, "agentID"), req.Env, req.VersionID); err != nil {
+				workspaceID, agentID := middleware.WorkspaceID(r.Context()), chi.URLParam(r, "agentID")
+				// dev 允许快速迭代；进入 staging/prod 前必须至少有一次通过的离线评测。
+				if control.EvalData != nil && req.Env != "dev" {
+					if err := control.EvalData.RequirePassedRun(r.Context(), workspaceID, agentID, req.VersionID); err != nil {
+						http.Error(w, err.Error(), http.StatusPreconditionFailed)
+						return
+					}
+				}
+				if err := control.Agents.Promote(r.Context(), workspaceID, agentID, req.Env, req.VersionID); err != nil {
 					http.Error(w, err.Error(), http.StatusBadRequest)
 					return
 				}
@@ -244,7 +313,7 @@ func NewRouterWithControlPlane(iamService *iam.Service, runtime ChatRuntime, con
 						http.Error(w, err.Error(), http.StatusNotFound)
 						return
 					}
-					req.ConversationID, req.WorkspaceID = conversation.ID, workspaceID
+					req.ConversationID, req.WorkspaceID, req.UserID = conversation.ID, workspaceID, middleware.UserID(r.Context())
 					var content, status string
 					err = runtime.ChatStream(r.Context(), req, func(event engine.Event) error {
 						if event.Type == "answer_done" {
@@ -288,6 +357,7 @@ func NewRouterWithControlPlane(iamService *iam.Service, runtime ChatRuntime, con
 				var endpoint struct {
 					URL     string `json:"url"`
 					SDKName string `json:"sdk_name"`
+					CardURL string `json:"card_url"`
 				}
 				if err := json.Unmarshal([]byte(req.EndpointConfig), &endpoint); err != nil {
 					http.Error(w, "invalid endpoint_config", http.StatusBadRequest)
@@ -298,6 +368,8 @@ func NewRouterWithControlPlane(iamService *iam.Service, runtime ChatRuntime, con
 				executableEndpoint := endpoint.URL
 				if req.SourceType == "internal_sdk" {
 					executableEndpoint = endpoint.SDKName
+				} else if req.SourceType == "a2a" {
+					executableEndpoint = endpoint.CardURL
 				}
 				version := platformtool.Version{
 					ID: versionID, ToolID: versionID,
@@ -523,6 +595,17 @@ func NewRouterWithControlPlane(iamService *iam.Service, runtime ChatRuntime, con
 					http.Error(w, err.Error(), http.StatusConflict)
 					return
 				}
+				if control.Audit != nil {
+					_, _ = control.Audit.Append(context.WithoutCancel(r.Context()), audit.Event{
+						WorkspaceID: workspaceID, ActorID: middleware.UserID(r.Context()),
+						Action:     "approval." + strings.TrimPrefix(action.Action.Name, "approval."),
+						ResourceID: approvalID,
+						Data: map[string]any{
+							"conversation_id": conversationID,
+							"tool_call_id":    request.ToolCallID, "tool_version_id": request.ToolVersionID,
+						},
+					})
+				}
 				status := "rejected"
 				if approved {
 					status = "approved"
@@ -542,6 +625,271 @@ func NewRouterWithControlPlane(iamService *iam.Service, runtime ChatRuntime, con
 				_ = json.NewEncoder(w).Encode(message)
 			})
 		}
+		if control.Guard != nil {
+			// 动态规则和配额都按 Workspace 隔离；Workspace 中间件还会限制写接口角色。
+			protected.With(middleware.Workspace(iamService)).Get("/api/v1/guard/rules", func(w http.ResponseWriter, r *http.Request) {
+				writeJSON(w, http.StatusOK, control.Guard.List(r.Context(), middleware.WorkspaceID(r.Context())))
+			})
+			protected.With(middleware.Workspace(iamService)).Post("/api/v1/guard/rules", func(w http.ResponseWriter, r *http.Request) {
+				var rule guard.RuleConfig
+				if err := json.NewDecoder(r.Body).Decode(&rule); err != nil {
+					http.Error(w, "invalid JSON", http.StatusBadRequest)
+					return
+				}
+				created, err := control.Guard.Create(r.Context(), middleware.WorkspaceID(r.Context()), rule)
+				if err != nil {
+					http.Error(w, err.Error(), http.StatusBadRequest)
+					return
+				}
+				writeJSON(w, http.StatusCreated, created)
+			})
+			protected.With(middleware.Workspace(iamService)).Put("/api/v1/guard/rules/{ruleID}", func(w http.ResponseWriter, r *http.Request) {
+				var rule guard.RuleConfig
+				if err := json.NewDecoder(r.Body).Decode(&rule); err != nil {
+					http.Error(w, "invalid JSON", http.StatusBadRequest)
+					return
+				}
+				updated, err := control.Guard.Update(
+					r.Context(), middleware.WorkspaceID(r.Context()), chi.URLParam(r, "ruleID"), rule,
+				)
+				if err != nil {
+					http.Error(w, err.Error(), http.StatusNotFound)
+					return
+				}
+				writeJSON(w, http.StatusOK, updated)
+			})
+			protected.With(middleware.Workspace(iamService)).Get("/api/v1/guard/quotas", func(w http.ResponseWriter, r *http.Request) {
+				writeJSON(w, http.StatusOK, control.Guard.ListQuotas(r.Context(), middleware.WorkspaceID(r.Context())))
+			})
+			protected.With(middleware.Workspace(iamService)).Put("/api/v1/guard/quotas/{metric}", func(w http.ResponseWriter, r *http.Request) {
+				var input struct {
+					Limit int64 `json:"limit"`
+				}
+				if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
+					http.Error(w, "invalid JSON", http.StatusBadRequest)
+					return
+				}
+				quota, err := control.Guard.SetQuota(
+					r.Context(), middleware.WorkspaceID(r.Context()), chi.URLParam(r, "metric"), input.Limit,
+				)
+				if err != nil {
+					http.Error(w, err.Error(), http.StatusBadRequest)
+					return
+				}
+				writeJSON(w, http.StatusOK, quota)
+			})
+		}
+		if control.Evaluator != nil && control.EvalData != nil {
+			protected.With(middleware.Workspace(iamService)).Get("/api/v1/eval/datasets", func(w http.ResponseWriter, r *http.Request) {
+				datasets, err := control.EvalData.ListDatasets(r.Context(), middleware.WorkspaceID(r.Context()))
+				if err != nil {
+					http.Error(w, err.Error(), http.StatusInternalServerError)
+					return
+				}
+				writeJSON(w, http.StatusOK, datasets)
+			})
+			protected.With(middleware.Workspace(iamService)).Post("/api/v1/eval/datasets", func(w http.ResponseWriter, r *http.Request) {
+				var req struct {
+					Name       string `json:"name"`
+					TargetKind string `json:"target_kind"`
+				}
+				if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+					http.Error(w, "invalid JSON", http.StatusBadRequest)
+					return
+				}
+				dataset, err := control.EvalData.CreateDataset(
+					r.Context(), middleware.WorkspaceID(r.Context()), req.Name, req.TargetKind,
+				)
+				if err != nil {
+					http.Error(w, err.Error(), http.StatusBadRequest)
+					return
+				}
+				writeJSON(w, http.StatusCreated, dataset)
+			})
+			protected.With(middleware.Workspace(iamService)).Get("/api/v1/eval/datasets/{datasetID}/cases", func(w http.ResponseWriter, r *http.Request) {
+				cases, err := control.EvalData.Cases(
+					r.Context(), middleware.WorkspaceID(r.Context()), chi.URLParam(r, "datasetID"),
+				)
+				if err != nil {
+					http.Error(w, err.Error(), http.StatusNotFound)
+					return
+				}
+				writeJSON(w, http.StatusOK, cases)
+			})
+			protected.With(middleware.Workspace(iamService)).Post("/api/v1/eval/datasets/{datasetID}/cases", func(w http.ResponseWriter, r *http.Request) {
+				var req struct {
+					Input          string `json:"input"`
+					Expected       string `json:"expected"`
+					ConversationID string `json:"conversation_id"`
+				}
+				if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+					http.Error(w, "invalid JSON", http.StatusBadRequest)
+					return
+				}
+				metadata := ""
+				if req.ConversationID != "" {
+					metadata = fmt.Sprintf(`{"conversation_id":%q}`, req.ConversationID)
+				}
+				item, err := control.EvalData.AddCase(
+					r.Context(), middleware.WorkspaceID(r.Context()), chi.URLParam(r, "datasetID"),
+					req.Input, req.Expected, metadata,
+				)
+				if err != nil {
+					http.Error(w, err.Error(), http.StatusNotFound)
+					return
+				}
+				writeJSON(w, http.StatusCreated, item)
+			})
+			protected.With(middleware.Workspace(iamService)).Get("/api/v1/eval/datasets/{datasetID}/runs", func(w http.ResponseWriter, r *http.Request) {
+				runs, err := control.EvalData.ListRuns(
+					r.Context(), middleware.WorkspaceID(r.Context()), chi.URLParam(r, "datasetID"),
+				)
+				if err != nil {
+					http.Error(w, err.Error(), http.StatusNotFound)
+					return
+				}
+				writeJSON(w, http.StatusOK, runs)
+			})
+			if runtime != nil && control.Agents != nil {
+				protected.With(middleware.Workspace(iamService)).Post("/api/v1/eval/runs", func(w http.ResponseWriter, r *http.Request) {
+					var req struct {
+						DatasetID           string  `json:"dataset_id"`
+						AgentID             string  `json:"agent_id"`
+						AgentVersionID      string  `json:"agent_version_id"`
+						JudgeTier           string  `json:"judge_tier"`
+						JudgeAgentID        string  `json:"judge_agent_id"`
+						JudgeAgentVersionID string  `json:"judge_agent_version_id"`
+						Threshold           float64 `json:"threshold"`
+					}
+					if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+						http.Error(w, "invalid JSON", http.StatusBadRequest)
+						return
+					}
+					if req.DatasetID == "" || req.AgentID == "" || req.AgentVersionID == "" {
+						http.Error(w, "dataset and pinned agent version are required", http.StatusBadRequest)
+						return
+					}
+					// 借助 Gate 复用 [0,1]、NaN 和无穷值校验。
+					if err := platformeval.Gate(platformeval.Report{PassRate: 1}, req.Threshold); err != nil {
+						http.Error(w, err.Error(), http.StatusBadRequest)
+						return
+					}
+
+					workspaceID := middleware.WorkspaceID(r.Context())
+					stored, err := control.EvalData.Cases(r.Context(), workspaceID, req.DatasetID)
+					if err != nil {
+						http.Error(w, err.Error(), http.StatusNotFound)
+						return
+					}
+					cases := make([]platformeval.Case, 0, len(stored))
+					for _, item := range stored {
+						cases = append(cases, platformeval.Case{
+							ID: item.ID, Input: item.Input, ExpectedContains: item.Expected,
+						})
+					}
+					target := runtimeEvalAgent{
+						runtime: runtime, agents: control.Agents, workspaceID: workspaceID,
+						userID: middleware.UserID(r.Context()), agentID: req.AgentID, versionID: req.AgentVersionID,
+					}
+
+					var judge platformeval.Judge = platformeval.ContainsJudge{}
+					if req.JudgeTier != "" && req.JudgeTier != "deterministic" {
+						if (req.JudgeTier != "light" && req.JudgeTier != "full") ||
+							req.JudgeAgentID == "" || req.JudgeAgentVersionID == "" {
+							http.Error(w, "light/full judge requires a pinned judge agent version", http.StatusBadRequest)
+							return
+						}
+						judgeAgent := runtimeEvalAgent{
+							runtime: runtime, agents: control.Agents, workspaceID: workspaceID,
+							userID: middleware.UserID(r.Context()), agentID: req.JudgeAgentID,
+							versionID: req.JudgeAgentVersionID,
+						}
+						judge = platformeval.LLMJudge{
+							Tier: req.JudgeTier,
+							Runner: func(ctx context.Context, prompt string) (string, error) {
+								output, err := judgeAgent.Run(ctx, prompt)
+								return output.Content, err
+							},
+						}
+					}
+
+					report, err := control.Evaluator.RunWithJudge(r.Context(), cases, target, judge)
+					if err != nil {
+						http.Error(w, err.Error(), http.StatusBadRequest)
+						return
+					}
+					passed := platformeval.Gate(report, req.Threshold) == nil
+					scores := make([]map[string]any, 0, len(report.Results))
+					for _, result := range report.Results {
+						scores = append(scores, map[string]any{
+							"case_id": result.CaseID, "dimension": "correctness",
+							"score": result.Score, "reason": strings.Join(result.Reasons, "; "),
+						})
+					}
+					storedRun, err := control.EvalData.RecordRun(r.Context(), workspaceID, platformeval.StoredRun{
+						DatasetID: req.DatasetID, AgentID: req.AgentID, AgentVersionID: req.AgentVersionID,
+						JudgeKind: judge.Kind(), Threshold: req.Threshold, PassRate: report.PassRate,
+						Passed: passed, Report: report,
+					})
+					if err != nil {
+						http.Error(w, err.Error(), http.StatusBadRequest)
+						return
+					}
+					status := http.StatusOK
+					if !passed {
+						status = http.StatusUnprocessableEntity
+					}
+					writeJSON(w, status, map[string]any{
+						"run_id": storedRun.ID, "agent_version_id": storedRun.AgentVersionID,
+						"judge": storedRun.JudgeKind, "pass_rate": report.PassRate,
+						"passed": passed, "total": len(report.Results), "scores": scores,
+					})
+				})
+			}
+		}
+		if control.Audit != nil {
+			protected.With(middleware.Workspace(iamService)).Get("/api/v1/audit/logs", func(w http.ResponseWriter, r *http.Request) {
+				events, err := control.Audit.List(r.Context(), middleware.WorkspaceID(r.Context()))
+				if err != nil {
+					http.Error(w, err.Error(), http.StatusInternalServerError)
+					return
+				}
+				conversationID, actorID := r.URL.Query().Get("conversation_id"), r.URL.Query().Get("actor")
+				filtered := events[:0]
+				for _, event := range events {
+					// 部分事件以会话为资源；工具事件则把会话编号放在附加数据中。
+					// 两处都检查，才能完整还原一次会话涉及的审计记录。
+					linkedConversation := event.ResourceID == conversationID
+					if value, ok := event.Data["conversation_id"].(string); ok && value == conversationID {
+						linkedConversation = true
+					}
+					if conversationID != "" && !linkedConversation {
+						continue
+					}
+					if actorID != "" && event.ActorID != actorID {
+						continue
+					}
+					filtered = append(filtered, event)
+				}
+				writeJSON(w, http.StatusOK, filtered)
+			})
+		}
+		if control.Approvals != nil {
+			protected.With(middleware.Workspace(iamService)).Get("/api/v1/approvals", func(w http.ResponseWriter, r *http.Request) {
+				requests, err := control.Approvals.List(r.Context(), middleware.WorkspaceID(r.Context()))
+				if err != nil {
+					http.Error(w, err.Error(), http.StatusInternalServerError)
+					return
+				}
+				writeJSON(w, http.StatusOK, requests)
+			})
+		}
+		protected.With(middleware.Workspace(iamService)).Get("/api/v1/observability", func(w http.ResponseWriter, r *http.Request) {
+			writeJSON(w, http.StatusOK, map[string]any{
+				"service": "ecommerce-ops-agent", "workspace_id": middleware.WorkspaceID(r.Context()),
+				"tracing": "opentelemetry", "session_key": "conversation_id",
+			})
+		})
 		if runtime != nil {
 			stream := NewStreamHandler(runtime)
 			if control.Agents != nil {

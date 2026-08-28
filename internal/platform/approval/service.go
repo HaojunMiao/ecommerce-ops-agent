@@ -27,18 +27,22 @@ const (
 
 // Request 表示一次等待人工决策的敏感工具调用。
 type Request struct {
-	ID, WorkspaceID, RunID, ToolCallID, ToolVersionID string
-	Arguments                                         []byte
-	Checkpoint                                        []byte
-	Status                                            string
-	DecidedBy                                         string
-	ExpiresAt                                         time.Time
-	LeaseOwner                                        string
-	LeaseUntil                                        time.Time
-	FencingToken                                      uint64
-	Attempts                                          int
-	LastError                                         string
-	argumentsHash                                     [32]byte
+	ID            string    `json:"id"`
+	WorkspaceID   string    `json:"workspace_id"`
+	RunID         string    `json:"run_id"`
+	ToolCallID    string    `json:"tool_call_id"`
+	ToolVersionID string    `json:"tool_version_id"`
+	Arguments     []byte    `json:"arguments"`
+	Checkpoint    []byte    `json:"-"`
+	Status        string    `json:"status"`
+	DecidedBy     string    `json:"decided_by,omitempty"`
+	ExpiresAt     time.Time `json:"expires_at"`
+	LeaseOwner    string    `json:"lease_owner,omitempty"`
+	LeaseUntil    time.Time `json:"lease_until,omitempty"`
+	FencingToken  uint64    `json:"fencing_token,omitempty"`
+	Attempts      int       `json:"attempts,omitempty"`
+	LastError     string    `json:"last_error,omitempty"`
+	argumentsHash [32]byte
 }
 
 // Lease 表示某个 Worker 暂时取得了恢复执行权；Token 用于拒绝旧 Worker 的迟到结果。
@@ -64,6 +68,22 @@ func NewPostgresService(pool *pgxpool.Pool) *Service {
 	service := NewService()
 	service.pool = pool
 	return service
+}
+
+// List 返回工作空间内的审批记录，但通过 json:"-" 永不暴露 Eino 检查点。
+func (s *Service) List(ctx context.Context, workspaceID string) ([]Request, error) {
+	if s.pool != nil {
+		return s.listPostgres(ctx, workspaceID)
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	result := make([]Request, 0)
+	for _, request := range s.requests {
+		if request.WorkspaceID == workspaceID {
+			result = append(result, cloneRequest(request))
+		}
+	}
+	return result, nil
 }
 
 // Create 将工具参数规范化后计算哈希，使审批绑定到确定的参数内容，而不受 JSON 空格和字段顺序影响。

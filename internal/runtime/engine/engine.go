@@ -5,8 +5,10 @@ import (
 	"fmt"
 
 	"github.com/HaojunMiao/ecommerce-ops-agent/internal/domain"
+	"github.com/HaojunMiao/ecommerce-ops-agent/internal/platform/audit"
 	"github.com/HaojunMiao/ecommerce-ops-agent/internal/platform/modelconfig"
 	"github.com/HaojunMiao/ecommerce-ops-agent/internal/platform/skill"
+	"github.com/HaojunMiao/ecommerce-ops-agent/internal/runtime/guard"
 	"github.com/HaojunMiao/ecommerce-ops-agent/internal/runtime/llm"
 	"github.com/HaojunMiao/ecommerce-ops-agent/internal/runtime/tooling"
 	"github.com/cloudwego/eino/components/model"
@@ -58,6 +60,8 @@ type Engine struct {
 	profiles  ModelProfileResolver
 	skills    SkillResolver
 	approvals ApprovalGate
+	guard     RuntimeGuard
+	audit     AuditSink
 }
 
 type ToolRuntime interface {
@@ -85,6 +89,16 @@ type SkillResolver interface {
 type ConversationMessageStore interface {
 	ListMessages(ctx context.Context, workspaceID, conversationID string) ([]domain.Message, error)
 	AppendMessage(ctx context.Context, workspaceID, conversationID, role, content string) error
+}
+
+// RuntimeGuard 是 Engine 对安全管线的最小依赖；具体规则及存储方式由 guard 包负责。
+type RuntimeGuard interface {
+	Evaluate(ctx context.Context, workspaceID, hook, text string) (guard.Decision, error)
+}
+
+// AuditSink 让运行时依赖最小写入接口，不耦合审计账本的存储实现。
+type AuditSink interface {
+	Append(ctx context.Context, event audit.Event) (audit.Event, error)
 }
 
 // New 创建Agent Runtime
@@ -116,6 +130,16 @@ func (e *Engine) WithSkills(skills SkillResolver) *Engine {
 
 func (e *Engine) WithApprovals(approvals ApprovalGate) *Engine {
 	e.approvals = approvals
+	return e
+}
+
+func (e *Engine) WithGuard(runtimeGuard RuntimeGuard) *Engine {
+	e.guard = runtimeGuard
+	return e
+}
+
+func (e *Engine) WithAudit(sink AuditSink) *Engine {
+	e.audit = sink
 	return e
 }
 

@@ -68,6 +68,7 @@ func (h *StreamHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	req.WorkspaceID = middleware.WorkspaceID(r.Context())
+	req.UserID = middleware.UserID(r.Context())
 	if h.conversations != nil {
 		// 首轮请求可以不传 conversation_id：根据 Agent 的目标环境创建会话并固定版本。
 		// 后续请求传入 ID 时，ResolveConversation 会校验工作空间、用户和 Agent 归属。
