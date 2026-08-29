@@ -11,6 +11,7 @@ import { NAV } from '@/nav'
 import { useAuthStore } from '@/store/authStore'
 import { useUIStore } from '@/store/uiStore'
 import { WorkspaceSwitcher } from './WorkspaceSwitcher'
+import './AppLayout.css'
 
 const { Header, Sider, Content } = Layout
 
@@ -37,25 +38,23 @@ export function AppLayout({ children }: { children: ReactNode }) {
   // 当前选中 = path 第一段;面包屑 = 该 NAV 项的 label。
   const seg = location.split('/')[1] || 'workspaces'
   const current = NAV.find((n) => n.key === seg)
+  const isConversationPage = seg === 'conversations'
 
   return (
-    <Layout style={{ minHeight: '100vh' }}>
-      <Sider collapsible collapsed={collapsed} trigger={null} theme="dark" width={220}>
-        <div
-          style={{
-            height: 56,
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            color: '#fff',
-            fontWeight: 700,
-            fontSize: collapsed ? 18 : 20,
-            letterSpacing: 1,
-          }}
-        >
-          {collapsed ? 'k' : 'kbot'}
+    <Layout className="app-shell">
+      <Sider
+        className="app-sidebar"
+        collapsible
+        collapsed={collapsed}
+        trigger={null}
+        theme="dark"
+        width={220}
+      >
+        <div className={`app-brand${collapsed ? ' is-collapsed' : ''}`}>
+          {collapsed ? 'EO' : '电商运营 Agent'}
         </div>
         <Menu
+          className="app-navigation"
           theme="dark"
           mode="inline"
           selectedKeys={[seg]}
@@ -66,23 +65,15 @@ export function AppLayout({ children }: { children: ReactNode }) {
           }}
         />
       </Sider>
-      <Layout>
-        <Header
-          style={{
-            background: '#fff',
-            padding: '0 16px',
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'space-between',
-            borderBottom: '1px solid #f0f0f0',
-          }}
-        >
+      <Layout className="app-main-shell">
+        <Header className="app-header">
           <Button
+            className="app-sidebar-toggle"
             type="text"
             icon={collapsed ? <MenuUnfoldOutlined /> : <MenuFoldOutlined />}
             onClick={toggleCollapsed}
           />
-          <span style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
+          <span className="app-header-actions">
             <WorkspaceSwitcher />
             <Dropdown
               menu={{
@@ -99,21 +90,21 @@ export function AppLayout({ children }: { children: ReactNode }) {
                 ],
               }}
             >
-              <span style={{ cursor: 'pointer' }}>
+              <span className="app-user-menu">
                 <Avatar size="small" icon={<UserOutlined />} />
-                <Typography.Text style={{ marginLeft: 8 }}>
+                <Typography.Text className="app-user-name">
                   {user?.name || user?.email || '未登录'}
                 </Typography.Text>
               </span>
             </Dropdown>
           </span>
         </Header>
-        <Content style={{ margin: 16 }}>
+        <Content className={`app-content${isConversationPage ? ' is-conversation-page' : ''}`}>
           <Breadcrumb
-            style={{ marginBottom: 12 }}
-            items={[{ title: 'kbot' }, { title: current?.label ?? '页面' }]}
+            className="app-breadcrumb"
+            items={[{ title: '电商运营 Agent' }, { title: current?.label ?? '页面' }]}
           />
-          <div style={{ background: '#fff', padding: 24, borderRadius: 8, minHeight: 360 }}>
+          <div className={`app-page-surface${isConversationPage ? ' is-conversation-page' : ''}`}>
             {children}
           </div>
         </Content>

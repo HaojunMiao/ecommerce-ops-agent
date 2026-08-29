@@ -1,4 +1,4 @@
-// 后端 domain 类型的前端镜像。当前按 ADR 0017 维护手写类型，并由 TypeScript 构建做契约检查。
+// 后端 domain 类型的前端镜像，由 TypeScript 构建做契约检查。
 
 export interface Workspace {
   id: string
@@ -22,7 +22,6 @@ export interface Agent {
 export interface CreateAgentRequest {
   name: string
   template: string
-  system_prompt?: string
   system_prompt_version_id?: string
   system_prompt_id?: string
   user_prompt_id?: string
@@ -35,9 +34,9 @@ export interface CreateAgentRequest {
 }
 
 export interface AgentVersionConfig {
-  system_prompt?: string
   system_prompt_version_id?: string
   system_prompt_id?: string
+  model_config_version_id?: string
   user_prompt_id?: string
   prompt_env?: string
   tool_ids?: string[]
@@ -54,35 +53,6 @@ export interface AgentVersion {
   config: AgentVersionConfig
   environments: string[]
   created_by: string
-  created_at: string
-}
-
-export interface TeamMember {
-  agent_id: string
-  agent_version_id?: string
-  role: string
-}
-
-export interface Team {
-  id: string
-  workspace_id: string
-  name: string
-  mode: string
-  created_at: string
-}
-
-export interface CreateTeamRequest {
-  name: string
-  mode: string
-  members: TeamMember[]
-}
-
-export interface TeamVersion {
-  id: string
-  team_id: string
-  version: number
-  members: TeamMember[]
-  environments: string[]
   created_at: string
 }
 
@@ -123,7 +93,7 @@ export interface PromptVersion {
   version: number
   template: string
   variables_schema: string
-  model_profile_version_id?: string
+  model_config_version_id?: string
   generation_config?: {
     temperature?: number
     top_p?: number
@@ -191,6 +161,7 @@ export interface ToolVersion {
   schema_json: string
   endpoint_config: string
   auth_config: string
+  has_auth?: boolean
   retry_policy: string
   status: string
   created_by: string
@@ -215,6 +186,7 @@ export interface KbDocument {
   source_type: string
   source_uri: string
   hash: string
+  embedding_identity: string
   classification: string
   status: string
   ingested_at?: string | null
@@ -249,58 +221,7 @@ export interface Passage {
   score: number
 }
 
-// ---- Eval ----
-export interface EvalDataset {
-  id: string
-  workspace_id: string
-  name: string
-  target_kind: string
-  created_at: string
-}
-
-export interface EvalCase {
-  id: string
-  dataset_id: string
-  input: string
-  expected: string
-  metadata: string
-  created_at: string
-}
-
-export interface EvalRun {
-  id: string
-  dataset_id: string
-  target_id: string
-  judge_id: string
-  status: string
-  pass_rate: number
-  threshold: number
-  created_at: string
-  finished_at?: string
-}
-
-export interface EvalScore {
-  run_id: string
-  case_id: string
-  dimension: string
-  score: number
-  reason: string
-}
-
-export interface EvalRunResult {
-  run_id: string
-  pass_rate: number
-  passed: boolean
-  total: number
-  scores: EvalScore[]
-}
-
-export interface EvalRunHistory {
-  run: EvalRun
-  scores: EvalScore[]
-}
-
-// ---- Audit / Guard ----
+// ---- Audit ----
 export interface AuditLog {
   id: string
   actor: string
@@ -312,23 +233,6 @@ export interface AuditLog {
   ip?: string | null
   user_agent?: string | null
   created_at: string
-}
-
-export interface GuardRule {
-  id: string
-  kind: string
-  hook: string
-  pattern_or_model: string
-  action: string
-  enabled: boolean
-  workspace_id: string
-}
-
-export interface GuardQuota {
-  metric: string
-  period: string
-  used: number
-  limit: number
 }
 
 // ---- Approval ----

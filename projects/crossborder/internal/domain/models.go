@@ -2,49 +2,80 @@ package domain
 
 import "time"
 
-// 定义跨境电商业务中的核心数据
-
-type OrderStatus string
-
 const (
-	OrderAwaitingShipment OrderStatus = "awaiting_shipment"
-	OrderCancelled        OrderStatus = "cancelled"
+	OrderAwaitingShipment = "awaiting_shipment"
+	OrderPartiallyShipped = "partially_shipped"
+	OrderCancelled        = "cancelled"
 )
 
-// 订单中的单个商品
 type OrderItem struct {
-	SKU      string
-	Quantity int
-	Price    float64
+	SKU      string  `json:"sku"`
+	Quantity int     `json:"quantity"`
+	Price    float64 `json:"price"`
 }
 
-// 订单
 type Order struct {
-	ID               string
-	Market           string
-	Currency         string
-	Amount           float64
-	Status           OrderStatus
-	FulfillmentWH    string
-	CancellationOpen bool
-	Items            []OrderItem
+	ID               string      `json:"id"`
+	ShopID           string      `json:"shop_id"`
+	Market           string      `json:"market"`
+	Currency         string      `json:"currency"`
+	Amount           float64     `json:"amount"`
+	Status           string      `json:"status"`
+	FulfillmentWH    string      `json:"fulfillment_warehouse"`
+	ShipBy           time.Time   `json:"ship_by"`
+	Items            []OrderItem `json:"items"`
+	CancellationOpen bool        `json:"cancellation_open"`
 }
 
-// 某个仓库中某个SKU的可用库存
 type InventoryBalance struct {
-	WarehouseID string
-	SKU         string
-	Available   int
+	WarehouseID string `json:"warehouse_id"`
+	SKU         string `json:"sku"`
+	Available   int    `json:"available"`
+	Reserved    int    `json:"reserved"`
 }
 
-// 仓库之间的调拨记录
-// 从哪调到哪、调哪个（SKU）、调多少件（Quantity）
+type ShippingOption struct {
+	Provider     string  `json:"provider"`
+	Service      string  `json:"service"`
+	Cost         float64 `json:"cost"`
+	Currency     string  `json:"currency"`
+	DeliveryDays int     `json:"delivery_days"`
+	SLAEligible  bool    `json:"sla_eligible"`
+}
+
 type InventoryTransfer struct {
-	ID            string
-	SKU           string
-	FromWarehouse string
-	ToWarehouse   string
-	Quantity      int
-	Status        string
-	CreatedAt     time.Time
+	ID            string    `json:"id"`
+	SKU           string    `json:"sku"`
+	FromWarehouse string    `json:"from_warehouse"`
+	ToWarehouse   string    `json:"to_warehouse"`
+	Quantity      int       `json:"quantity"`
+	Status        string    `json:"status"`
+	CreatedAt     time.Time `json:"created_at"`
+}
+
+type Refund struct {
+	ID        string    `json:"id"`
+	OrderID   string    `json:"order_id"`
+	Amount    float64   `json:"amount"`
+	Currency  string    `json:"currency"`
+	Reason    string    `json:"reason"`
+	Status    string    `json:"status"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
+type SettlementStatement struct {
+	ID             string  `json:"id"`
+	ExpectedAmount float64 `json:"expected_amount"`
+	PaidAmount     float64 `json:"paid_amount"`
+	Currency       string  `json:"currency"`
+	Status         string  `json:"status"`
+}
+
+type ReconciliationCase struct {
+	ID          string    `json:"id"`
+	StatementID string    `json:"statement_id"`
+	Difference  float64   `json:"difference"`
+	Reason      string    `json:"reason"`
+	Status      string    `json:"status"`
+	CreatedAt   time.Time `json:"created_at"`
 }

@@ -1,3 +1,4 @@
+// Package api 提供HTTP路由器
 package api
 
 import (
@@ -5,911 +6,257 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/go-chi/cors"
 
-	"github.com/HaojunMiao/ecommerce-ops-agent/internal/a2ui"
 	"github.com/HaojunMiao/ecommerce-ops-agent/internal/api/middleware"
-	markdown "github.com/HaojunMiao/ecommerce-ops-agent/internal/connector/markdown_folder"
-	"github.com/HaojunMiao/ecommerce-ops-agent/internal/domain"
-	"github.com/HaojunMiao/ecommerce-ops-agent/internal/platform/agent"
-	"github.com/HaojunMiao/ecommerce-ops-agent/internal/platform/approval"
-	"github.com/HaojunMiao/ecommerce-ops-agent/internal/platform/audit"
-	platformeval "github.com/HaojunMiao/ecommerce-ops-agent/internal/platform/eval"
-	"github.com/HaojunMiao/ecommerce-ops-agent/internal/platform/iam"
-	"github.com/HaojunMiao/ecommerce-ops-agent/internal/platform/kb"
-	"github.com/HaojunMiao/ecommerce-ops-agent/internal/platform/modelconfig"
-	"github.com/HaojunMiao/ecommerce-ops-agent/internal/platform/prompt"
-	"github.com/HaojunMiao/ecommerce-ops-agent/internal/platform/skill"
-	platformteam "github.com/HaojunMiao/ecommerce-ops-agent/internal/platform/team"
-	platformtool "github.com/HaojunMiao/ecommerce-ops-agent/internal/platform/tool"
+	"github.com/HaojunMiao/ecommerce-ops-agent/internal/api/streaming"
+	v1 "github.com/HaojunMiao/ecommerce-ops-agent/internal/api/v1"
+	"github.com/HaojunMiao/ecommerce-ops-agent/internal/infrastructure/jobs"
+	"github.com/HaojunMiao/ecommerce-ops-agent/internal/infrastructure/metrics"
+	"github.com/HaojunMiao/ecommerce-ops-agent/internal/platform"
+	"github.com/HaojunMiao/ecommerce-ops-agent/internal/runtime/cache"
 	"github.com/HaojunMiao/ecommerce-ops-agent/internal/runtime/engine"
-	"github.com/HaojunMiao/ecommerce-ops-agent/internal/runtime/guard"
-	"github.com/HaojunMiao/ecommerce-ops-agent/internal/runtime/retriever"
 )
 
-type ControlPlane struct {
-	Agents         *agent.Service
-	Approvals      *approval.Service
-	Audit          *audit.Ledger
-	Tools          *platformtool.Registry
-	KBs            *kb.Service
-	Search         *retriever.KnowledgeSearch
-	Prompts        *prompt.Service
-	Profiles       *modelconfig.Registry
-	Skills         *skill.Service
-	Guard          *guard.Service
-	Evaluator      *platformeval.Service
-	EvalData       *platformeval.Catalog
-	Teams          *platformteam.Service
-	Webhook        http.Handler
-	Lark           http.Handler
-	ApprovalWorker interface{ Wake() }
+// Handler HTTP处理器
+type Handler struct {
+	platform       *platform.Service
+	runtime        *engine.Engine
+	jobs           *jobs.Client
+	observability  ObservabilityConfig
+	readiness      []ReadinessCheck
+	allowedOrigins []string
+	idemStore      cache.IdemStore
 }
 
-// runtimeEvalAgent 把现有 ChatRuntime 适配为评测模块所需的最小 Agent 接口。
-// 每次 Run 都为指定版本新建独立会话，并从运行事件中收集最终答案和工具轨迹。
-type runtimeEvalAgent struct {
-	runtime     ChatRuntime
-	agents      *agent.Service
-	workspaceID string
-	userID      string
-	agentID     string
-	versionID   string
+// SetAllowedOrigins 配置 HTTP CORS 来源白名单。
+func (h *Handler) SetAllowedOrigins(origins []string) *Handler {
+	h.allowedOrigins = append([]string(nil), origins...)
+	return h
 }
 
-func (a runtimeEvalAgent) Run(ctx context.Context, input string) (platformeval.Output, error) {
-	conversation, err := a.agents.CreateConversationForVersion(
-		ctx, a.workspaceID, a.agentID, a.versionID, "eval:"+a.userID,
-	)
-	if err != nil {
-		return platformeval.Output{}, err
+type ObservabilityConfig struct {
+	OTLPEndpoint      string
+	LangfuseUIURL     string
+	LangfuseProjectID string
+}
+
+// ReadinessCheck 描述一个影响服务接流量能力的依赖检查。
+type ReadinessCheck struct {
+	Name  string
+	Check func(context.Context) error
+}
+
+// NewHandler 创建HTTP处理器
+func NewHandler(platform *platform.Service, runtime *engine.Engine, jobs *jobs.Client) *Handler {
+	return &Handler{
+		platform:       platform,
+		runtime:        runtime,
+		jobs:           jobs,
+		allowedOrigins: []string{"http://localhost:8080", "http://localhost:5173"},
+		idemStore:      cache.NewMemoryIdemStore(),
 	}
-	output := platformeval.Output{}
-	err = a.runtime.ChatStream(ctx, engine.ChatRequest{
-		ConversationID: conversation.ID,
-		WorkspaceID:    a.workspaceID,
-		UserID:         "eval:" + a.userID,
-		Message:        input,
-	}, func(event engine.Event) error {
-		if event.Type == "answer_done" {
-			output.Content = event.Text
+}
+
+// SetIdempotencyStore 注入跨进程幂等与入站事件去重存储。
+func (h *Handler) SetIdempotencyStore(store cache.IdemStore) *Handler {
+	if store != nil {
+		h.idemStore = store
+	}
+	return h
+}
+
+// SetObservability 注入可观测端点配置(OTLP/Langfuse),供 GET /api/v1/observability 暴露给 Admin 页。
+func (h *Handler) SetObservability(cfg ObservabilityConfig) *Handler {
+	h.observability = cfg
+	return h
+}
+
+// SetReadiness 注入数据库、缓存等就绪检查。
+func (h *Handler) SetReadiness(checks ...ReadinessCheck) *Handler {
+	h.readiness = checks
+	return h
+}
+
+func (h *Handler) ready(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
+	defer cancel()
+	for _, check := range h.readiness {
+		if check.Check == nil {
+			continue
 		}
-		if event.Type == "tool_finished" {
-			if data, ok := event.Data.(map[string]any); ok {
-				if name, ok := data["name"].(string); ok {
-					output.Tools = append(output.Tools, name)
-				}
-			}
+		if err := check.Check(ctx); err != nil {
+			http.Error(w, fmt.Sprintf("not ready: %s", check.Name), http.StatusServiceUnavailable)
+			return
 		}
-		return nil
-	})
-	return output, err
-}
-
-// agentConfigRequest 是创建 Agent 或发布新版本时提交的运行配置。
-// 这些组件版本 ID 会一起固化到 AgentSnapshot 中。
-type agentConfigRequest struct {
-	Name                  string   `json:"name"`
-	Template              string   `json:"template"`
-	SystemPrompt          string   `json:"system_prompt"`
-	SystemPromptVersionID string   `json:"system_prompt_version_id"`
-	ToolIDs               []string `json:"tool_ids"`
-	SkillVersionIDs       []string `json:"skill_version_ids"`
-	KBIDs                 []string `json:"kb_ids"`
-	MaxSteps              int      `json:"max_steps"`
-}
-
-func (req agentConfigRequest) snapshot(workspaceID, agentID, versionID string) engine.AgentSnapshot {
-	if req.MaxSteps <= 0 {
-		req.MaxSteps = 4
 	}
-	if req.SystemPrompt == "" && req.SystemPromptVersionID == "" {
-		req.SystemPrompt = "You are a helpful kbot course agent."
-	}
-	return engine.AgentSnapshot{
-		ID: versionID, AgentID: agentID, WorkspaceID: workspaceID,
-		SystemPrompt: req.SystemPrompt, MaxSteps: req.MaxSteps,
-		PromptVersionID: req.SystemPromptVersionID,
-		ToolVersionIDs:  append([]string(nil), req.ToolIDs...), SkillVersionIDs: append([]string(nil), req.SkillVersionIDs...),
-		KnowledgeVersionIDs: append([]string(nil), req.KBIDs...),
-	}
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write([]byte("ok"))
 }
 
-func NewRouter(iamService *iam.Service, runtimes ...ChatRuntime) http.Handler {
-	return NewRouterWithControlPlane(iamService, firstRuntime(runtimes), ControlPlane{})
-}
+// Routes 创建路由
+func (h *Handler) Routes() http.Handler {
+	r := chi.NewRouter()
 
-func NewRouterWithControlPlane(iamService *iam.Service, runtime ChatRuntime, control ControlPlane) http.Handler {
-	// 使用chi框架
-	router := chi.NewRouter()
+	// 基础中间件
+	r.Use(middleware.Recover())
+	r.Use(middleware.TraceHTTP())
+	r.Use(middleware.RequestID())
+	r.Use(middleware.Logger())
 
-	// 注册中间件
-	// RequestID中间件用于给一次HTTP请求分配唯一编号。写入响应头X-Request-ID、放进请求的context
-	router.Use(middleware.Recoverer, middleware.RequestID)
-	router.Get("/healthz", func(w http.ResponseWriter, _ *http.Request) {
+	r.Use(cors.Handler(cors.Options{
+		AllowedOrigins:   h.allowedOrigins,
+		AllowedMethods:   []string{"GET", "POST", "PUT", "DELETE", "OPTIONS"},
+		AllowedHeaders:   []string{"Accept", "Authorization", "Content-Type", "Idempotency-Key", "X-CSRF-Token", "X-Workspace-ID"},
+		ExposedHeaders:   []string{"Link", "X-Request-ID", "X-Idempotent-Replay"},
+		AllowCredentials: false,
+		MaxAge:           300,
+	}))
+
+	// /health 保留历史路径；/healthz 仅检查进程存活；/readyz 检查外部依赖。
+	healthOK := func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("ok"))
-	})
-	// 外部渠道使用各自的签名认证，不能放进要求 JWT 的 protected 路由。
-	if control.Webhook != nil {
-		router.Method(http.MethodPost, "/api/v1/integrations/webhook", control.Webhook)
 	}
-	if control.Lark != nil {
-		router.Method(http.MethodPost, "/api/v1/integrations/lark/events", control.Lark)
-	}
+	r.Get("/health", healthOK)
+	r.Get("/healthz", healthOK)
+	r.Get("/readyz", h.ready)
 
-	// 平台相关的一些API（注册、登录、列出用户有权限的workspace）
-	// 注册
-	router.Post("/api/v1/auth/register", func(w http.ResponseWriter, r *http.Request) {
-		// 从请求中拿出用户注册相关的数据，入库
-		var req struct{ Email, Password, Name string }
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			http.Error(w, "invalid JSON", http.StatusBadRequest)
-			return
-		}
-		// 注册（入库）
-		user, err := iamService.Register(r.Context(), req.Email, req.Password, req.Name)
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusBadRequest)
-			return
-		}
-		writeJSON(w, http.StatusCreated, user)
-	})
-	// 登录
-	router.Post("/api/v1/auth/login", func(w http.ResponseWriter, r *http.Request) {
-		var req struct{ Email, Password string }
-		if json.NewDecoder(r.Body).Decode(&req) != nil {
-			http.Error(w, "invalid JSON", http.StatusBadRequest)
-			return
-		}
-		// 登录
-		result, err := iamService.Login(r.Context(), req.Email, req.Password)
-		if err != nil {
-			http.Error(w, "invalid email or password", http.StatusUnauthorized)
-			return
-		}
-		writeJSON(w, http.StatusOK, result)
-	})
-	router.Group(func(protected chi.Router) {
-		// auth中间件：从请求头拿到jwt，解析出userID
-		protected.Use(middleware.Auth(iamService))
+	// Prometheus 指标。
+	r.Handle("/metrics", metrics.Handler())
 
-		// 列出有权限的workspace
-		protected.Get("/api/v1/workspaces", func(w http.ResponseWriter, r *http.Request) {
-			workspaces, err := iamService.ListUserWorkspaces(r.Context(), middleware.UserID(r.Context()))
-			if err != nil {
-				http.Error(w, "list workspaces", http.StatusInternalServerError)
-				return
-			}
-			writeJSON(w, http.StatusOK, workspaces)
-		})
-		protected.With(middleware.Workspace(iamService)).Get("/api/v1/context", func(w http.ResponseWriter, r *http.Request) {
-			writeJSON(w, http.StatusOK, map[string]string{
-				"user_id":      middleware.UserID(r.Context()),
-				"workspace_id": middleware.WorkspaceID(r.Context()),
-				"role":         middleware.WorkspaceRole(r.Context()),
-			})
-		})
-		registerTeamRoutes(protected, iamService, runtime, control)
-		if control.Agents != nil {
-			protected.With(middleware.Workspace(iamService)).Get("/api/v1/agents", func(w http.ResponseWriter, r *http.Request) {
-				writeJSON(w, http.StatusOK, control.Agents.ListAgents(r.Context(), middleware.WorkspaceID(r.Context())))
-			})
-			protected.With(middleware.Workspace(iamService)).Post("/api/v1/agents", func(w http.ResponseWriter, r *http.Request) {
-				var req agentConfigRequest
-				if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-					http.Error(w, "invalid JSON", http.StatusBadRequest)
-					return
-				}
-				workspaceID := middleware.WorkspaceID(r.Context())
-				item, err := control.Agents.CreateAgent(r.Context(), workspaceID, req.Name, req.Template)
-				if err != nil {
-					http.Error(w, err.Error(), http.StatusBadRequest)
-					return
-				}
-				// 创建 Agent 时同步发布初始版本，并默认放到 dev 环境供新会话选择。
-				versionID := fmt.Sprintf("agent-version-%d", time.Now().UnixNano())
-				version := domain.AgentVersion{
-					ID: versionID, AgentID: item.ID, WorkspaceID: workspaceID,
-					Version: 1, SystemPrompt: req.SystemPrompt, CreatedAt: time.Now().UTC(),
-				}
-				if err := control.Agents.Publish(r.Context(), version, req.snapshot(workspaceID, item.ID, versionID)); err != nil {
-					http.Error(w, err.Error(), http.StatusBadRequest)
-					return
-				}
-				if err := control.Agents.Promote(r.Context(), workspaceID, item.ID, "dev", versionID); err != nil {
-					http.Error(w, err.Error(), http.StatusBadRequest)
-					return
-				}
-				writeJSON(w, http.StatusCreated, item)
-			})
-			protected.With(middleware.Workspace(iamService)).Get("/api/v1/agents/{agentID}", func(w http.ResponseWriter, r *http.Request) {
-				item, err := control.Agents.GetAgent(r.Context(), middleware.WorkspaceID(r.Context()), chi.URLParam(r, "agentID"))
-				if err != nil {
-					http.Error(w, "agent not found", http.StatusNotFound)
-					return
-				}
-				writeJSON(w, http.StatusOK, item)
-			})
-			protected.With(middleware.Workspace(iamService)).Get("/api/v1/agents/{agentID}/versions", func(w http.ResponseWriter, r *http.Request) {
-				writeJSON(w, http.StatusOK, control.Agents.ListVersions(r.Context(), middleware.WorkspaceID(r.Context()), chi.URLParam(r, "agentID")))
-			})
-			protected.With(middleware.Workspace(iamService)).Post("/api/v1/agents/{agentID}/versions", func(w http.ResponseWriter, r *http.Request) {
-				var req agentConfigRequest
-				if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-					http.Error(w, "invalid JSON", http.StatusBadRequest)
-					return
-				}
-				workspaceID, agentID := middleware.WorkspaceID(r.Context()), chi.URLParam(r, "agentID")
-				if _, err := control.Agents.GetAgent(r.Context(), workspaceID, agentID); err != nil {
-					http.Error(w, "agent not found", http.StatusNotFound)
-					return
-				}
-				versions := control.Agents.ListVersions(r.Context(), workspaceID, agentID)
-				versionID := fmt.Sprintf("agent-version-%d", time.Now().UnixNano())
-				version := domain.AgentVersion{
-					ID: versionID, AgentID: agentID, WorkspaceID: workspaceID,
-					Version: len(versions) + 1, SystemPrompt: req.SystemPrompt, CreatedAt: time.Now().UTC(),
-				}
-				if err := control.Agents.Publish(r.Context(), version, req.snapshot(workspaceID, agentID, versionID)); err != nil {
-					http.Error(w, err.Error(), http.StatusBadRequest)
-					return
-				}
-				writeJSON(w, http.StatusCreated, version)
-			})
-			protected.With(middleware.Workspace(iamService)).Post("/api/v1/agents/{agentID}/promote", func(w http.ResponseWriter, r *http.Request) {
-				var req struct {
-					VersionID string `json:"version_id"`
-					Env       string `json:"env"`
-				}
-				if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-					http.Error(w, "invalid JSON", http.StatusBadRequest)
-					return
-				}
-				workspaceID, agentID := middleware.WorkspaceID(r.Context()), chi.URLParam(r, "agentID")
-				// dev 允许快速迭代；进入 staging/prod 前必须至少有一次通过的离线评测。
-				if control.EvalData != nil && req.Env != "dev" {
-					if err := control.EvalData.RequirePassedRun(r.Context(), workspaceID, agentID, req.VersionID); err != nil {
-						http.Error(w, err.Error(), http.StatusPreconditionFailed)
-						return
-					}
-				}
-				if err := control.Agents.Promote(r.Context(), workspaceID, agentID, req.Env, req.VersionID); err != nil {
-					http.Error(w, err.Error(), http.StatusBadRequest)
-					return
-				}
-				w.WriteHeader(http.StatusNoContent)
-			})
-			protected.With(middleware.Workspace(iamService)).Get("/api/v1/conversations", func(w http.ResponseWriter, r *http.Request) {
-				writeJSON(w, http.StatusOK, control.Agents.ListConversations(r.Context(), middleware.WorkspaceID(r.Context()), r.URL.Query().Get("agent_id")))
-			})
-			protected.With(middleware.Workspace(iamService)).Get("/api/v1/conversations/{conversationID}", func(w http.ResponseWriter, r *http.Request) {
-				conversation, messages, err := control.Agents.ConversationDetail(
-					r.Context(), middleware.WorkspaceID(r.Context()), middleware.UserID(r.Context()), chi.URLParam(r, "conversationID"),
-				)
-				if err != nil {
-					http.Error(w, "conversation not found", http.StatusNotFound)
-					return
-				}
-				writeJSON(w, http.StatusOK, map[string]any{"conversation": conversation, "messages": messages})
-			})
-			if runtime != nil {
-				// 非流式管理接口复用同一运行时，便于管理后台直接发起聊天。
-				protected.With(middleware.Workspace(iamService)).Post("/api/v1/agents/{agentID}/chat", func(w http.ResponseWriter, r *http.Request) {
-					var req engine.ChatRequest
-					if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-						http.Error(w, "invalid JSON", http.StatusBadRequest)
-						return
-					}
-					workspaceID := middleware.WorkspaceID(r.Context())
-					conversation, err := control.Agents.ResolveConversation(
-						r.Context(), workspaceID, middleware.UserID(r.Context()), chi.URLParam(r, "agentID"),
-						req.AgentEnvironment, req.ConversationID,
-					)
-					if err != nil {
-						http.Error(w, err.Error(), http.StatusNotFound)
-						return
-					}
-					req.ConversationID, req.WorkspaceID, req.UserID = conversation.ID, workspaceID, middleware.UserID(r.Context())
-					var content, status string
-					err = runtime.ChatStream(r.Context(), req, func(event engine.Event) error {
-						if event.Type == "answer_done" {
-							content = event.Text
-						}
-						if event.Type == "run_finished" {
-							if data, ok := event.Data.(map[string]string); ok {
-								status = data["status"]
-							}
-						}
-						return nil
-					})
-					if err != nil {
-						http.Error(w, err.Error(), http.StatusBadGateway)
-						return
-					}
-					writeJSON(w, http.StatusOK, map[string]string{
-						"content": content, "conversation_id": conversation.ID, "status": status,
-					})
+	// API v1路由
+	r.Route("/api/v1", func(r chi.Router) {
+		// 认证路由（无需认证）
+		authHandler := v1.NewAuthHandler(h.platform.IAM)
+		r.Post("/auth/login", authHandler.Login)
+
+		// 需要认证的路由
+		r.Group(func(r chi.Router) {
+			r.Use(middleware.Auth(h.platform.IAM))
+			r.Use(middleware.Workspace(h.platform.IAM))
+			// 带 Idempotency-Key 的 POST/PUT 请求会进行去重。
+			r.Use(middleware.Idempotency(h.idemStore))
+
+			// IAM：用户与工作空间。
+			r.With(middleware.RequireGlobalAdmin()).Post("/auth/register", authHandler.CreateUser)
+			iamHandler := v1.NewIAMHandler(h.platform.IAM)
+			r.With(middleware.RequireGlobalAdmin()).Get("/users", iamHandler.ListUsers)
+			r.Get("/workspaces", iamHandler.ListWorkspaces)
+			r.Post("/workspaces", iamHandler.CreateWorkspace)
+			r.Get("/workspaces/{workspace_id}/members", iamHandler.ListWorkspaceMembers)
+			r.Put("/workspaces/{workspace_id}/members/{user_id}", iamHandler.UpsertWorkspaceMember)
+			r.Delete("/workspaces/{workspace_id}/members/{user_id}", iamHandler.DeleteWorkspaceMember)
+
+			// Agent路由
+			agentHandler := v1.NewAgentHandler(h.platform.Agent, h.runtime, h.platform.Approvals)
+			r.Post("/agents", agentHandler.CreateAgent)
+			r.Get("/agents", agentHandler.ListAgents)
+			r.Get("/agents/{agent_id}", agentHandler.GetAgent)
+			r.Get("/agents/{agent_id}/versions", agentHandler.ListAgentVersions)
+			r.Get("/agents/{agent_id}/input-schema", agentHandler.GetUserPromptInputSpec)
+			r.Post("/agents/{agent_id}/versions", agentHandler.CreateAgentVersion)
+			r.Post("/agents/{agent_id}/promote", agentHandler.PromoteAgentVersion)
+			r.Post("/agents/{agent_id}/chat", agentHandler.Chat)
+			r.Get("/conversations", agentHandler.ListConversations)
+			r.Get("/conversations/{conversation_id}", agentHandler.GetConversation)
+
+			// Tool Registry。
+			toolHandler := v1.NewToolHandler(h.platform.Tool, h.platform.Registry)
+			r.Post("/tools", toolHandler.CreateTool)
+			r.Get("/tools", toolHandler.ListTools)
+			r.Get("/tools/{tool_id}/versions", toolHandler.ListToolVersions)
+			r.Post("/tools/{tool_id}/versions", toolHandler.CreateToolVersion)
+			r.Post("/tools/{tool_id}/test", toolHandler.TestTool)
+			r.Post("/tools/{tool_id}/publish", toolHandler.PublishTool)
+			r.Post("/tools/{tool_id}/versions/{version_id}/publish", toolHandler.PublishToolVersion)
+
+			// Knowledge Base。
+			kbHandler := v1.NewKBHandler(h.platform.KB)
+			r.Post("/kbs", kbHandler.CreateKB)
+			r.Get("/kbs", kbHandler.ListKBs)
+			r.Post("/kbs/{kb_id}/connectors/markdown/sync", kbHandler.SyncConnector)
+			r.Get("/kbs/{kb_id}/connectors", kbHandler.ListConnectors)
+			r.Get("/kbs/{kb_id}/documents", kbHandler.ListDocuments)
+			r.Post("/kbs/{kb_id}/search", kbHandler.Search)
+			r.Get("/kbs/{kb_id}/jobs", kbHandler.ListIngestJobs)
+
+			// Prompt 中心。
+			promptHandler := v1.NewPromptHandler(h.platform.Prompt)
+			r.Post("/prompts", promptHandler.CreatePrompt)
+			r.Get("/prompts", promptHandler.ListPrompts)
+			r.Post("/prompts/{prompt_id}/versions", promptHandler.CreateVersion)
+			r.Get("/prompts/{prompt_id}/versions", promptHandler.ListVersions)
+			r.Post("/prompts/{prompt_id}/promote", promptHandler.Promote)
+			r.Post("/prompts/{prompt_id}/rollback", promptHandler.Rollback)
+			r.Get("/prompts/{prompt_id}/diff", promptHandler.Diff)
+			r.Post("/prompts/{prompt_id}/render", promptHandler.Render)
+
+			// 单层不可变模型配置；API Key 仅由部署环境注入。
+			modelHandler := v1.NewModelConfigHandler(h.platform.ModelConfig)
+			r.Get("/model-config-versions", modelHandler.ListConfigVersions)
+
+			// Skills。
+			skillHandler := v1.NewSkillHandler(h.platform.Skill, h.platform.Agent)
+			r.Post("/skills", skillHandler.CreateSkill)
+			r.Get("/skills", skillHandler.ListSkills)
+			r.Get("/skills/{skill_id}/versions", skillHandler.ListVersions)
+			r.Post("/skills/{skill_id}/versions", skillHandler.CreateVersion)
+			r.Post("/skills/{skill_id}/publish", skillHandler.Publish)
+			r.Post("/skills/{skill_id}/subscribe", skillHandler.Subscribe)
+
+			// Audit：保留数据库内的运行审计。
+			auditHandler := v1.NewAuditHandler(h.platform.Audit)
+			r.Get("/audit/logs", auditHandler.Logs)
+
+			// 人在环审批队列。
+			approvalHandler := v1.NewApprovalHandler(h.platform.Approvals, h.jobs, h.platform.Audit)
+			r.Get("/approvals", approvalHandler.List)
+			r.Post("/approvals/{approval_id}/approve", approvalHandler.Approve)
+			r.Post("/approvals/{approval_id}/reject", approvalHandler.Reject)
+
+			// 用户信息
+			r.Get("/me", func(w http.ResponseWriter, r *http.Request) {
+				userID := middleware.GetUserIDFromContext(r.Context())
+				w.Header().Set("Content-Type", "application/json")
+				_ = json.NewEncoder(w).Encode(map[string]string{
+					"user_id":     userID,
+					"global_role": middleware.GetGlobalRoleFromContext(r.Context()),
 				})
-			}
-		}
-		if control.Tools != nil {
-			protected.With(middleware.Workspace(iamService)).Get("/api/v1/tools", func(w http.ResponseWriter, r *http.Request) {
-				writeJSON(w, http.StatusOK, control.Tools.List(r.Context(), middleware.WorkspaceID(r.Context())))
 			})
-			protected.With(middleware.Workspace(iamService)).Post("/api/v1/tools", func(w http.ResponseWriter, r *http.Request) {
-				var req struct {
-					Name           string `json:"name"`
-					SourceType     string `json:"source_type"`
-					Description    string `json:"description"`
-					SchemaJSON     string `json:"schema_json"`
-					EndpointConfig string `json:"endpoint_config"`
-					AuthConfig     string `json:"auth_config"`
-					Sensitive      bool   `json:"sensitive"`
-				}
-				if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-					http.Error(w, "invalid JSON", http.StatusBadRequest)
-					return
-				}
-				var endpoint struct {
-					URL     string `json:"url"`
-					SDKName string `json:"sdk_name"`
-					CardURL string `json:"card_url"`
-				}
-				if err := json.Unmarshal([]byte(req.EndpointConfig), &endpoint); err != nil {
-					http.Error(w, "invalid endpoint_config", http.StatusBadRequest)
-					return
-				}
-				versionID := fmt.Sprintf("tool-version-%d", time.Now().UnixNano())
-				// REST 工具保存 URL；internal_sdk 工具保存进程内注册名。
-				executableEndpoint := endpoint.URL
-				if req.SourceType == "internal_sdk" {
-					executableEndpoint = endpoint.SDKName
-				} else if req.SourceType == "a2a" {
-					executableEndpoint = endpoint.CardURL
-				}
-				version := platformtool.Version{
-					ID: versionID, ToolID: versionID,
-					WorkspaceID: middleware.WorkspaceID(r.Context()), Name: req.Name,
-					SourceType: req.SourceType, Description: req.Description,
-					InputSchema: []byte(req.SchemaJSON), Endpoint: executableEndpoint,
-					AuthConfig: req.AuthConfig, HasAuth: req.AuthConfig != "",
-					Sensitive: req.Sensitive, Published: true, CreatedAt: time.Now().UTC(),
-				}
-				if err := control.Tools.Register(r.Context(), version); err != nil {
-					http.Error(w, err.Error(), http.StatusBadRequest)
-					return
-				}
-				writeJSON(w, http.StatusCreated, version)
-			})
-		}
-		if control.KBs != nil {
-			// 知识库属于工作空间资源，所有接口都必须经过 Workspace 中间件校验。
-			protected.With(middleware.Workspace(iamService)).Get("/api/v1/kbs", func(w http.ResponseWriter, r *http.Request) {
-				writeJSON(w, http.StatusOK, control.KBs.List(r.Context(), middleware.WorkspaceID(r.Context())))
-			})
-			protected.With(middleware.Workspace(iamService)).Post("/api/v1/kbs", func(w http.ResponseWriter, r *http.Request) {
-				var req struct {
-					Name string `json:"name"`
-				}
-				if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-					http.Error(w, "invalid JSON", http.StatusBadRequest)
-					return
-				}
-				base, err := control.KBs.Create(r.Context(), middleware.WorkspaceID(r.Context()), req.Name)
-				if err != nil {
-					http.Error(w, err.Error(), http.StatusBadRequest)
-					return
-				}
-				writeJSON(w, http.StatusCreated, base)
-			})
-			protected.With(middleware.Workspace(iamService)).Post("/api/v1/kbs/{kbID}/connectors/markdown/sync", func(w http.ResponseWriter, r *http.Request) {
-				var req struct {
-					RootPath string `json:"root_path"`
-				}
-				if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-					http.Error(w, "invalid JSON", http.StatusBadRequest)
-					return
-				}
-				// 每次同步请求创建一个带本次 RootPath 的 Connector 实例。
-				job, err := control.KBs.Sync(
-					r.Context(), middleware.WorkspaceID(r.Context()), chi.URLParam(r, "kbID"),
-					markdown.New(req.RootPath),
-				)
-				if err != nil {
-					// 返回失败的 job，调用方仍能看到具体失败阶段和原因。
-					writeJSON(w, http.StatusUnprocessableEntity, job)
-					return
-				}
-				writeJSON(w, http.StatusAccepted, job)
-			})
-			protected.With(middleware.Workspace(iamService)).Get("/api/v1/kbs/{kbID}/documents", func(w http.ResponseWriter, r *http.Request) {
-				documents, err := control.KBs.Documents(
-					r.Context(), middleware.WorkspaceID(r.Context()), chi.URLParam(r, "kbID"),
-				)
-				if err != nil {
-					http.Error(w, "knowledge base not found", http.StatusNotFound)
-					return
-				}
-				writeJSON(w, http.StatusOK, documents)
-			})
-			if control.Search != nil {
-				// 管理端检索 Playground：不经过模型，便于直接比较三种检索模式。
-				protected.With(middleware.Workspace(iamService)).Post("/api/v1/kbs/{kbID}/search", func(w http.ResponseWriter, r *http.Request) {
-					var req struct {
-						Query string `json:"query"`
-						Mode  string `json:"mode"`
-						TopK  int    `json:"top_k"`
-					}
-					if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-						http.Error(w, "invalid JSON", http.StatusBadRequest)
-						return
-					}
-					if req.TopK == 0 {
-						req.TopK = 5
-					}
-					results, err := control.Search.Search(
-						r.Context(), middleware.WorkspaceID(r.Context()), chi.URLParam(r, "kbID"),
-						req.Query, req.Mode, req.TopK,
-					)
-					if err != nil {
-						http.Error(w, err.Error(), http.StatusBadRequest)
-						return
-					}
-					writeJSON(w, http.StatusOK, results)
+
+			// 向 Admin 暴露可观测端点配置。
+			r.Get("/observability", func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				_ = json.NewEncoder(w).Encode(map[string]any{
+					"metrics_url":         "/metrics",
+					"healthz_url":         "/healthz",
+					"readyz_url":          "/readyz",
+					"otlp_endpoint":       h.observability.OTLPEndpoint,
+					"traces_enabled":      h.observability.OTLPEndpoint != "",
+					"langfuse_ui_url":     h.observability.LangfuseUIURL,
+					"langfuse_project_id": h.observability.LangfuseProjectID,
 				})
-			}
-		}
-		if control.Prompts != nil {
-			// 提示词以不可变版本发布，列表和创建均按工作空间隔离。
-			protected.With(middleware.Workspace(iamService)).Get("/api/v1/prompts", func(w http.ResponseWriter, r *http.Request) {
-				writeJSON(w, http.StatusOK, control.Prompts.List(r.Context(), middleware.WorkspaceID(r.Context())))
-			})
-			protected.With(middleware.Workspace(iamService)).Post("/api/v1/prompts", func(w http.ResponseWriter, r *http.Request) {
-				var req struct {
-					Name     string `json:"name"`
-					Category string `json:"category"`
-					Template string `json:"template"`
-				}
-				if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-					http.Error(w, "invalid JSON", http.StatusBadRequest)
-					return
-				}
-				version := prompt.Version{
-					ID:          fmt.Sprintf("prompt-version-%d", time.Now().UnixNano()),
-					WorkspaceID: middleware.WorkspaceID(r.Context()),
-					Name:        req.Name, Category: req.Category, Template: req.Template,
-				}
-				if err := control.Prompts.Publish(r.Context(), version); err != nil {
-					http.Error(w, err.Error(), http.StatusBadRequest)
-					return
-				}
-				writeJSON(w, http.StatusCreated, map[string]any{"prompt": version, "version": version})
-			})
-		}
-		if control.Profiles != nil {
-			// 模型配置版本可包含多个有序部署；本课接口先创建单部署配置。
-			protected.With(middleware.Workspace(iamService)).Get("/api/v1/model-profiles", func(w http.ResponseWriter, r *http.Request) {
-				writeJSON(w, http.StatusOK, control.Profiles.List(r.Context(), middleware.WorkspaceID(r.Context())))
-			})
-			protected.With(middleware.Workspace(iamService)).Post("/api/v1/model-profiles", func(w http.ResponseWriter, r *http.Request) {
-				var req struct {
-					Name              string `json:"name"`
-					ClassificationMax string `json:"classification_max"`
-					Provider          string `json:"provider"`
-					Model             string `json:"model"`
-					BaseURL           string `json:"base_url"`
-					APIKey            string `json:"api_key"`
-				}
-				if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-					http.Error(w, "invalid JSON", http.StatusBadRequest)
-					return
-				}
-				if req.ClassificationMax == "" {
-					req.ClassificationMax = "internal"
-				}
-				if req.Provider == "" {
-					req.Provider = "openai-compatible"
-				}
-				if req.Model == "" {
-					req.Model = "kbot-course-model"
-				}
-				if req.BaseURL == "" {
-					req.BaseURL = "http://mockllm:8081/v1"
-				}
-				profile := modelconfig.ProfileVersion{
-					ID:          fmt.Sprintf("model-profile-version-%d", time.Now().UnixNano()),
-					WorkspaceID: middleware.WorkspaceID(r.Context()),
-					Name:        req.Name, ClassificationMax: req.ClassificationMax,
-					Deployments: []modelconfig.Deployment{{
-						Provider: req.Provider, Model: req.Model, BaseURL: req.BaseURL,
-						APIKey: req.APIKey, HasAPIKey: req.APIKey != "",
-					}},
-				}
-				if err := control.Profiles.Publish(r.Context(), profile); err != nil {
-					http.Error(w, err.Error(), http.StatusBadRequest)
-					return
-				}
-				writeJSON(w, http.StatusCreated, map[string]any{"profile": profile, "version": profile})
-			})
-		}
-		if control.Skills != nil {
-			protected.With(middleware.Workspace(iamService)).Get("/api/v1/skills", func(w http.ResponseWriter, r *http.Request) {
-				writeJSON(w, http.StatusOK, control.Skills.List(r.Context(), middleware.WorkspaceID(r.Context())))
-			})
-			protected.With(middleware.Workspace(iamService)).Post("/api/v1/skills", func(w http.ResponseWriter, r *http.Request) {
-				var req struct {
-					SkillMD string `json:"skill_md"`
-				}
-				if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-					http.Error(w, "invalid JSON", http.StatusBadRequest)
-					return
-				}
-				version, err := control.Skills.Publish(
-					r.Context(), fmt.Sprintf("skill-version-%d", time.Now().UnixNano()),
-					middleware.WorkspaceID(r.Context()), []byte(req.SkillMD),
-				)
-				if err != nil {
-					http.Error(w, err.Error(), http.StatusBadRequest)
-					return
-				}
-				writeJSON(w, http.StatusCreated, map[string]any{"skill": version, "version": version})
-			})
-		}
-		if control.Approvals != nil {
-			// A2UI 动作不是只凭前端传来的 approval_id 就执行：服务端会同时核对
-			// 会话、界面、按钮和审批单绑定，防止篡改请求去批准另一笔操作。
-			protected.With(middleware.Workspace(iamService)).Post("/api/v1/conversations/{conversationID}/a2ui/actions", func(w http.ResponseWriter, r *http.Request) {
-				var action a2ui.ActionRequest
-				if err := json.NewDecoder(r.Body).Decode(&action); err != nil || action.Version != a2ui.Version {
-					http.Error(w, "invalid A2UI action", http.StatusBadRequest)
-					return
-				}
-				if action.Action.Name != "approval.approve" && action.Action.Name != "approval.reject" {
-					http.Error(w, "A2UI action is not allowed", http.StatusBadRequest)
-					return
-				}
-
-				approvalID, _ := action.Action.Context["approval_id"].(string)
-				contextConversationID, _ := action.Action.Context["conversation_id"].(string)
-				contextSurfaceID, _ := action.Action.Context["surface_id"].(string)
-				conversationID := chi.URLParam(r, "conversationID")
-				workspaceID := middleware.WorkspaceID(r.Context())
-				request, err := control.Approvals.Get(r.Context(), workspaceID, approvalID)
-				expectedComponentID := "approval-reject"
-				if action.Action.Name == "approval.approve" {
-					expectedComponentID = "approval-approve"
-				}
-				if err != nil || request.RunID != conversationID || contextConversationID != conversationID ||
-					action.Action.SurfaceID != "approval-"+approvalID || contextSurfaceID != action.Action.SurfaceID ||
-					action.Action.SourceComponentID != expectedComponentID {
-					http.Error(w, "approval action binding does not match", http.StatusForbidden)
-					return
-				}
-
-				approved := action.Action.Name == "approval.approve"
-				if err := control.Approvals.Decide(r.Context(), workspaceID, approvalID, middleware.UserID(r.Context()), approved); err != nil {
-					http.Error(w, err.Error(), http.StatusConflict)
-					return
-				}
-				if control.Audit != nil {
-					_, _ = control.Audit.Append(context.WithoutCancel(r.Context()), audit.Event{
-						WorkspaceID: workspaceID, ActorID: middleware.UserID(r.Context()),
-						Action:     "approval." + strings.TrimPrefix(action.Action.Name, "approval."),
-						ResourceID: approvalID,
-						Data: map[string]any{
-							"conversation_id": conversationID,
-							"tool_call_id":    request.ToolCallID, "tool_version_id": request.ToolVersionID,
-						},
-					})
-				}
-				status := "rejected"
-				if approved {
-					status = "approved"
-					// 除了一秒一次的兜底轮询，主动唤醒可以让批准后的恢复几乎立即开始。
-					if control.ApprovalWorker != nil {
-						control.ApprovalWorker.Wake()
-					}
-				}
-				message := a2ui.Message{Version: a2ui.Version, UpdateDataModel: &a2ui.UpdateDataModel{
-					SurfaceID: action.Action.SurfaceID, Path: "/status", Value: status,
-				}}
-				if err := a2ui.Validate(message); err != nil {
-					http.Error(w, err.Error(), http.StatusInternalServerError)
-					return
-				}
-				w.Header().Set("Content-Type", "application/a2ui+json")
-				_ = json.NewEncoder(w).Encode(message)
-			})
-		}
-		if control.Guard != nil {
-			// 动态规则和配额都按 Workspace 隔离；Workspace 中间件还会限制写接口角色。
-			protected.With(middleware.Workspace(iamService)).Get("/api/v1/guard/rules", func(w http.ResponseWriter, r *http.Request) {
-				writeJSON(w, http.StatusOK, control.Guard.List(r.Context(), middleware.WorkspaceID(r.Context())))
-			})
-			protected.With(middleware.Workspace(iamService)).Post("/api/v1/guard/rules", func(w http.ResponseWriter, r *http.Request) {
-				var rule guard.RuleConfig
-				if err := json.NewDecoder(r.Body).Decode(&rule); err != nil {
-					http.Error(w, "invalid JSON", http.StatusBadRequest)
-					return
-				}
-				created, err := control.Guard.Create(r.Context(), middleware.WorkspaceID(r.Context()), rule)
-				if err != nil {
-					http.Error(w, err.Error(), http.StatusBadRequest)
-					return
-				}
-				writeJSON(w, http.StatusCreated, created)
-			})
-			protected.With(middleware.Workspace(iamService)).Put("/api/v1/guard/rules/{ruleID}", func(w http.ResponseWriter, r *http.Request) {
-				var rule guard.RuleConfig
-				if err := json.NewDecoder(r.Body).Decode(&rule); err != nil {
-					http.Error(w, "invalid JSON", http.StatusBadRequest)
-					return
-				}
-				updated, err := control.Guard.Update(
-					r.Context(), middleware.WorkspaceID(r.Context()), chi.URLParam(r, "ruleID"), rule,
-				)
-				if err != nil {
-					http.Error(w, err.Error(), http.StatusNotFound)
-					return
-				}
-				writeJSON(w, http.StatusOK, updated)
-			})
-			protected.With(middleware.Workspace(iamService)).Get("/api/v1/guard/quotas", func(w http.ResponseWriter, r *http.Request) {
-				writeJSON(w, http.StatusOK, control.Guard.ListQuotas(r.Context(), middleware.WorkspaceID(r.Context())))
-			})
-			protected.With(middleware.Workspace(iamService)).Put("/api/v1/guard/quotas/{metric}", func(w http.ResponseWriter, r *http.Request) {
-				var input struct {
-					Limit int64 `json:"limit"`
-				}
-				if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
-					http.Error(w, "invalid JSON", http.StatusBadRequest)
-					return
-				}
-				quota, err := control.Guard.SetQuota(
-					r.Context(), middleware.WorkspaceID(r.Context()), chi.URLParam(r, "metric"), input.Limit,
-				)
-				if err != nil {
-					http.Error(w, err.Error(), http.StatusBadRequest)
-					return
-				}
-				writeJSON(w, http.StatusOK, quota)
-			})
-		}
-		if control.Evaluator != nil && control.EvalData != nil {
-			protected.With(middleware.Workspace(iamService)).Get("/api/v1/eval/datasets", func(w http.ResponseWriter, r *http.Request) {
-				datasets, err := control.EvalData.ListDatasets(r.Context(), middleware.WorkspaceID(r.Context()))
-				if err != nil {
-					http.Error(w, err.Error(), http.StatusInternalServerError)
-					return
-				}
-				writeJSON(w, http.StatusOK, datasets)
-			})
-			protected.With(middleware.Workspace(iamService)).Post("/api/v1/eval/datasets", func(w http.ResponseWriter, r *http.Request) {
-				var req struct {
-					Name       string `json:"name"`
-					TargetKind string `json:"target_kind"`
-				}
-				if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-					http.Error(w, "invalid JSON", http.StatusBadRequest)
-					return
-				}
-				dataset, err := control.EvalData.CreateDataset(
-					r.Context(), middleware.WorkspaceID(r.Context()), req.Name, req.TargetKind,
-				)
-				if err != nil {
-					http.Error(w, err.Error(), http.StatusBadRequest)
-					return
-				}
-				writeJSON(w, http.StatusCreated, dataset)
-			})
-			protected.With(middleware.Workspace(iamService)).Get("/api/v1/eval/datasets/{datasetID}/cases", func(w http.ResponseWriter, r *http.Request) {
-				cases, err := control.EvalData.Cases(
-					r.Context(), middleware.WorkspaceID(r.Context()), chi.URLParam(r, "datasetID"),
-				)
-				if err != nil {
-					http.Error(w, err.Error(), http.StatusNotFound)
-					return
-				}
-				writeJSON(w, http.StatusOK, cases)
-			})
-			protected.With(middleware.Workspace(iamService)).Post("/api/v1/eval/datasets/{datasetID}/cases", func(w http.ResponseWriter, r *http.Request) {
-				var req struct {
-					Input          string `json:"input"`
-					Expected       string `json:"expected"`
-					ConversationID string `json:"conversation_id"`
-				}
-				if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-					http.Error(w, "invalid JSON", http.StatusBadRequest)
-					return
-				}
-				metadata := ""
-				if req.ConversationID != "" {
-					metadata = fmt.Sprintf(`{"conversation_id":%q}`, req.ConversationID)
-				}
-				item, err := control.EvalData.AddCase(
-					r.Context(), middleware.WorkspaceID(r.Context()), chi.URLParam(r, "datasetID"),
-					req.Input, req.Expected, metadata,
-				)
-				if err != nil {
-					http.Error(w, err.Error(), http.StatusNotFound)
-					return
-				}
-				writeJSON(w, http.StatusCreated, item)
-			})
-			protected.With(middleware.Workspace(iamService)).Get("/api/v1/eval/datasets/{datasetID}/runs", func(w http.ResponseWriter, r *http.Request) {
-				runs, err := control.EvalData.ListRuns(
-					r.Context(), middleware.WorkspaceID(r.Context()), chi.URLParam(r, "datasetID"),
-				)
-				if err != nil {
-					http.Error(w, err.Error(), http.StatusNotFound)
-					return
-				}
-				writeJSON(w, http.StatusOK, runs)
-			})
-			if runtime != nil && control.Agents != nil {
-				protected.With(middleware.Workspace(iamService)).Post("/api/v1/eval/runs", func(w http.ResponseWriter, r *http.Request) {
-					var req struct {
-						DatasetID           string  `json:"dataset_id"`
-						AgentID             string  `json:"agent_id"`
-						AgentVersionID      string  `json:"agent_version_id"`
-						JudgeTier           string  `json:"judge_tier"`
-						JudgeAgentID        string  `json:"judge_agent_id"`
-						JudgeAgentVersionID string  `json:"judge_agent_version_id"`
-						Threshold           float64 `json:"threshold"`
-					}
-					if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-						http.Error(w, "invalid JSON", http.StatusBadRequest)
-						return
-					}
-					if req.DatasetID == "" || req.AgentID == "" || req.AgentVersionID == "" {
-						http.Error(w, "dataset and pinned agent version are required", http.StatusBadRequest)
-						return
-					}
-					// 借助 Gate 复用 [0,1]、NaN 和无穷值校验。
-					if err := platformeval.Gate(platformeval.Report{PassRate: 1}, req.Threshold); err != nil {
-						http.Error(w, err.Error(), http.StatusBadRequest)
-						return
-					}
-
-					workspaceID := middleware.WorkspaceID(r.Context())
-					stored, err := control.EvalData.Cases(r.Context(), workspaceID, req.DatasetID)
-					if err != nil {
-						http.Error(w, err.Error(), http.StatusNotFound)
-						return
-					}
-					cases := make([]platformeval.Case, 0, len(stored))
-					for _, item := range stored {
-						cases = append(cases, platformeval.Case{
-							ID: item.ID, Input: item.Input, ExpectedContains: item.Expected,
-						})
-					}
-					target := runtimeEvalAgent{
-						runtime: runtime, agents: control.Agents, workspaceID: workspaceID,
-						userID: middleware.UserID(r.Context()), agentID: req.AgentID, versionID: req.AgentVersionID,
-					}
-
-					var judge platformeval.Judge = platformeval.ContainsJudge{}
-					if req.JudgeTier != "" && req.JudgeTier != "deterministic" {
-						if (req.JudgeTier != "light" && req.JudgeTier != "full") ||
-							req.JudgeAgentID == "" || req.JudgeAgentVersionID == "" {
-							http.Error(w, "light/full judge requires a pinned judge agent version", http.StatusBadRequest)
-							return
-						}
-						judgeAgent := runtimeEvalAgent{
-							runtime: runtime, agents: control.Agents, workspaceID: workspaceID,
-							userID: middleware.UserID(r.Context()), agentID: req.JudgeAgentID,
-							versionID: req.JudgeAgentVersionID,
-						}
-						judge = platformeval.LLMJudge{
-							Tier: req.JudgeTier,
-							Runner: func(ctx context.Context, prompt string) (string, error) {
-								output, err := judgeAgent.Run(ctx, prompt)
-								return output.Content, err
-							},
-						}
-					}
-
-					report, err := control.Evaluator.RunWithJudge(r.Context(), cases, target, judge)
-					if err != nil {
-						http.Error(w, err.Error(), http.StatusBadRequest)
-						return
-					}
-					passed := platformeval.Gate(report, req.Threshold) == nil
-					scores := make([]map[string]any, 0, len(report.Results))
-					for _, result := range report.Results {
-						scores = append(scores, map[string]any{
-							"case_id": result.CaseID, "dimension": "correctness",
-							"score": result.Score, "reason": strings.Join(result.Reasons, "; "),
-						})
-					}
-					storedRun, err := control.EvalData.RecordRun(r.Context(), workspaceID, platformeval.StoredRun{
-						DatasetID: req.DatasetID, AgentID: req.AgentID, AgentVersionID: req.AgentVersionID,
-						JudgeKind: judge.Kind(), Threshold: req.Threshold, PassRate: report.PassRate,
-						Passed: passed, Report: report,
-					})
-					if err != nil {
-						http.Error(w, err.Error(), http.StatusBadRequest)
-						return
-					}
-					status := http.StatusOK
-					if !passed {
-						status = http.StatusUnprocessableEntity
-					}
-					writeJSON(w, status, map[string]any{
-						"run_id": storedRun.ID, "agent_version_id": storedRun.AgentVersionID,
-						"judge": storedRun.JudgeKind, "pass_rate": report.PassRate,
-						"passed": passed, "total": len(report.Results), "scores": scores,
-					})
-				})
-			}
-		}
-		if control.Audit != nil {
-			protected.With(middleware.Workspace(iamService)).Get("/api/v1/audit/logs", func(w http.ResponseWriter, r *http.Request) {
-				events, err := control.Audit.List(r.Context(), middleware.WorkspaceID(r.Context()))
-				if err != nil {
-					http.Error(w, err.Error(), http.StatusInternalServerError)
-					return
-				}
-				conversationID, actorID := r.URL.Query().Get("conversation_id"), r.URL.Query().Get("actor")
-				filtered := events[:0]
-				for _, event := range events {
-					// 部分事件以会话为资源；工具事件则把会话编号放在附加数据中。
-					// 两处都检查，才能完整还原一次会话涉及的审计记录。
-					linkedConversation := event.ResourceID == conversationID
-					if value, ok := event.Data["conversation_id"].(string); ok && value == conversationID {
-						linkedConversation = true
-					}
-					if conversationID != "" && !linkedConversation {
-						continue
-					}
-					if actorID != "" && event.ActorID != actorID {
-						continue
-					}
-					filtered = append(filtered, event)
-				}
-				writeJSON(w, http.StatusOK, filtered)
-			})
-		}
-		if control.Approvals != nil {
-			protected.With(middleware.Workspace(iamService)).Get("/api/v1/approvals", func(w http.ResponseWriter, r *http.Request) {
-				requests, err := control.Approvals.List(r.Context(), middleware.WorkspaceID(r.Context()))
-				if err != nil {
-					http.Error(w, err.Error(), http.StatusInternalServerError)
-					return
-				}
-				writeJSON(w, http.StatusOK, requests)
-			})
-		}
-		protected.With(middleware.Workspace(iamService)).Get("/api/v1/observability", func(w http.ResponseWriter, r *http.Request) {
-			writeJSON(w, http.StatusOK, map[string]any{
-				"service": "ecommerce-ops-agent", "workspace_id": middleware.WorkspaceID(r.Context()),
-				"tracing": "opentelemetry", "session_key": "conversation_id",
 			})
 		})
-		if runtime != nil {
-			stream := NewStreamHandler(runtime)
-			if control.Agents != nil {
-				stream.WithConversations(control.Agents)
-			}
-			protected.With(middleware.Workspace(iamService)).Post("/stream/agents/{agentID}/chat", stream.ServeHTTP)
-		}
 	})
-	return router
-}
 
-func firstRuntime(runtimes []ChatRuntime) ChatRuntime {
-	if len(runtimes) == 0 {
-		return nil
-	}
-	return runtimes[0]
-}
+	// 流式API路由
+	r.Route("/stream", func(r chi.Router) {
+		r.Use(middleware.Auth(h.platform.IAM))
+		r.Use(middleware.Workspace(h.platform.IAM))
 
-func writeJSON(w http.ResponseWriter, status int, value any) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(value)
+		// SSE流式聊天
+		sseHandler := streaming.NewSSEHandler(h.runtime)
+		r.Post("/agents/{agent_id}/chat", sseHandler.ChatStream)
+
+	})
+
+	// 静态文件服务（Admin UI）：只提供当前 React 构建产物。
+	r.Handle("/*", spaFileServer(resolveWebRoot()))
+
+	return r
 }

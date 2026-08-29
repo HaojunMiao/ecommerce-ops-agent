@@ -1,0 +1,24 @@
+{"id":"q1","query":"订单即将超过 ship_by 还能不能发货","gold_docs":["fulfillment_sla"],"gold_span":"sla_eligible=true"}
+{"id":"q2","query":"所有物流渠道都不满足时效怎么办","gold_docs":["fulfillment_sla"],"gold_span":"转入跨仓调拨评估"}
+{"id":"q3","query":"阿拉斯加地址能不能走 7 日达","gold_docs":["remote_surcharge"],"gold_span":"12-18 日"}
+{"id":"q4","query":"偏远地址 1 公斤附加费多少","gold_docs":["remote_surcharge"],"gold_span":"11.0 USD"}
+{"id":"q5","query":"深圳仓没货要不要从洛杉矶调拨","gold_docs":["transfer_policy","inventory_hold"],"gold_span":"WH-US-LAX"}
+{"id":"q6","query":"调拨接口要不要审批","gold_docs":["transfer_policy"],"gold_span":"必须暂停等待人工审批"}
+{"id":"q7","query":"调拨幂等键怎么写","gold_docs":["transfer_policy"],"gold_span":"transfer:{order_id}:{sku}"}
+{"id":"q8","query":"买家取消了未发货订单最多退多少","gold_docs":["refund_policy"],"gold_span":"不得超过订单实付金额"}
+{"id":"q9","query":"TTS-20260801-1001 整单未发货可退金额","gold_docs":["refund_policy"],"gold_span":"129.99 USD"}
+{"id":"q10","query":"退款会不会打两遍","gold_docs":["refund_policy"],"gold_span":"refund:{order_id}:{amount}"}
+{"id":"q11","query":"账单差异怎么算","gold_docs":["settlement_policy"],"gold_span":"expected_amount - paid_amount"}
+{"id":"q12","query":"STMT-2026-31 差异是多少","gold_docs":["settlement_policy"],"gold_span":"11.52 USD"}
+{"id":"q13","query":"平台多付钱了要不要自动申诉","gold_docs":["settlement_policy"],"gold_span":"负差异"}
+{"id":"q14","query":"SKU-BLACK-M-01 深圳仓有多少可发","gold_docs":["inventory_hold"],"gold_span":"可用 0"}
+{"id":"q15","query":"能不能把洛杉矶 18 件当成深圳可发","gold_docs":["inventory_hold"],"gold_span":"禁止把 18 件加总"}
+{"id":"q16","query":"调拨单预占多久会释放","gold_docs":["inventory_hold"],"gold_span":"24 小时"}
+{"id":"q17","query":"0.8 公斤发美国本土运费多少","gold_docs":["weight_shipping"],"gold_span":"12.80 USD"}
+{"id":"q18","query":"超过两公斤能不能用一口价","gold_docs":["weight_shipping"],"gold_span":"禁止使用上表一口价"}
+{"id":"q19","query":"写操作审计要记哪些字段","gold_docs":["audit_trail"],"gold_span":"审批记录"}
+{"id":"q20","query":"历史会话能不能拿新版提示词重放","gold_docs":["audit_trail"],"gold_span":"禁止在排查故障时用新版本配置重放历史会话"}
+{"id":"q21","query":"PO Box 怎么走物流","gold_docs":["remote_surcharge","fulfillment_sla"],"gold_span":"PO Box"}
+{"id":"q22","query":"dry_run 调拨会不会扣库存","gold_docs":["transfer_policy"],"gold_span":"不生成调拨单"}
+{"id":"q23","query":"部分发货能不能整单退款","gold_docs":["refund_policy"],"gold_span":"不得整单退款"}
+{"id":"q24","query":"申诉必须带哪些字段","gold_docs":["settlement_policy"],"gold_span":"账单号、差异金额、费用原因和计算证据"}

@@ -13,6 +13,6 @@ export const useUIStore = create<UIState>()(
       collapsed: false,
       toggleCollapsed: () => set((s) => ({ collapsed: !s.collapsed })),
     }),
-    { name: 'kbot-ui' },
+    { name: 'ecommerce-ops-ui' },
   ),
 )

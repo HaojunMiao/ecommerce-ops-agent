@@ -1,9 +1,10 @@
+// Command server 是电商运营 Agent 平台入口：读配置、装配依赖、启动 HTTP/SSE 并优雅退出。
+
 package main
 
 import (
 	"context"
-	"encoding/json"
-	"errors"
+	"fmt"
 	"log"
 	"net/http"
 	"os/signal"
@@ -12,171 +13,207 @@ import (
 
 	"github.com/HaojunMiao/ecommerce-ops-agent/internal/api"
 	"github.com/HaojunMiao/ecommerce-ops-agent/internal/config"
-	courseotel "github.com/HaojunMiao/ecommerce-ops-agent/internal/infrastructure/otel"
-	postgresinfra "github.com/HaojunMiao/ecommerce-ops-agent/internal/infrastructure/postgres"
-	"github.com/HaojunMiao/ecommerce-ops-agent/internal/integration"
-	"github.com/HaojunMiao/ecommerce-ops-agent/internal/integration/lark"
-	"github.com/HaojunMiao/ecommerce-ops-agent/internal/integration/replay"
-	"github.com/HaojunMiao/ecommerce-ops-agent/internal/integration/webhook"
-	"github.com/HaojunMiao/ecommerce-ops-agent/internal/platform/agent"
-	"github.com/HaojunMiao/ecommerce-ops-agent/internal/platform/approval"
-	"github.com/HaojunMiao/ecommerce-ops-agent/internal/platform/audit"
-	platformeval "github.com/HaojunMiao/ecommerce-ops-agent/internal/platform/eval"
-	"github.com/HaojunMiao/ecommerce-ops-agent/internal/platform/iam"
-	"github.com/HaojunMiao/ecommerce-ops-agent/internal/platform/kb"
+	"github.com/HaojunMiao/ecommerce-ops-agent/internal/infrastructure/jobs"
+	"github.com/HaojunMiao/ecommerce-ops-agent/internal/infrastructure/otel"
+	"github.com/HaojunMiao/ecommerce-ops-agent/internal/infrastructure/postgres"
+	redisinfra "github.com/HaojunMiao/ecommerce-ops-agent/internal/infrastructure/redis"
+	"github.com/HaojunMiao/ecommerce-ops-agent/internal/platform"
 	"github.com/HaojunMiao/ecommerce-ops-agent/internal/platform/modelconfig"
-	"github.com/HaojunMiao/ecommerce-ops-agent/internal/platform/prompt"
-	"github.com/HaojunMiao/ecommerce-ops-agent/internal/platform/skill"
-	platformteam "github.com/HaojunMiao/ecommerce-ops-agent/internal/platform/team"
-	platformtool "github.com/HaojunMiao/ecommerce-ops-agent/internal/platform/tool"
+	"github.com/HaojunMiao/ecommerce-ops-agent/internal/platform/tool"
+	"github.com/HaojunMiao/ecommerce-ops-agent/internal/runtime/cache"
 	"github.com/HaojunMiao/ecommerce-ops-agent/internal/runtime/engine"
-	"github.com/HaojunMiao/ecommerce-ops-agent/internal/runtime/guard"
 	"github.com/HaojunMiao/ecommerce-ops-agent/internal/runtime/llm"
+	"github.com/HaojunMiao/ecommerce-ops-agent/internal/runtime/promptcache"
 	"github.com/HaojunMiao/ecommerce-ops-agent/internal/runtime/retriever"
-	"github.com/HaojunMiao/ecommerce-ops-agent/internal/runtime/sandbox"
-	"github.com/HaojunMiao/ecommerce-ops-agent/internal/runtime/tooling"
 )
 
-// 带优雅退出的服务
+// @title           E-commerce Operations Agent API
+// @version         1.0
+// @description     跨境电商运营 Agent REST API，由 swaggo/swag 从 handler 注解生成。
+// @BasePath        /api/v1
+// @securityDefinitions.apikey  BearerAuth
+// @in              header
+// @name            Authorization
 func main() {
-	// 加载配置
 	cfg := config.Load()
-	// 校验是否能正常加载配置
-	if err := cfg.Validate(); err != nil {
-		log.Fatal(err)
+	cfg.MustValidate() // 必填配置启动时就校验（快速失败）
+
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+
+	// 基础设施装配
+	log.Println("Initializing infrastructure...")
+
+	// 1. OpenTelemetry
+	otelCleanup := otel.MustInit(ctx, otel.Config{
+		Endpoint: cfg.OTLPEndpoint, Headers: cfg.OTLPHeaders,
+		ServiceName: "ecommerce-ops-agent-server", ServiceVersion: cfg.ServiceVersion,
+		Environment: cfg.Environment, SampleRatio: cfg.OTELSampleRatio,
+	})
+	defer otelCleanup()
+
+	// 2. 数据库
+	db := postgres.MustOpen(ctx, cfg.DatabaseURL)
+	defer db.Close()
+
+	// 3. Redis
+	rds := redisinfra.MustOpen(ctx, cfg.RedisURL)
+	defer rds.Close()
+
+	// 4. 任务队列客户端
+	jobsClient := jobs.NewClient(rds)
+	defer jobsClient.Close()
+
+	// 平台服务装配（Prompt 中心用 Redis Pub/Sub 广播失效）
+	log.Println("Initializing platform services...")
+	publisher := redisinfra.NewPublisher(rds)
+	// Embedding 使用独立出口，避免与聊天模型供应商和密钥耦合。
+	embedder, err := retriever.NewEmbedder(cfg.EmbedderKind, cfg.EmbedderDim, cfg.EmbedderBaseURL, cfg.EmbedderAPIKey, cfg.EmbedderModel)
+	must(err)
+	// jobsClient 作为 KB ingest 的异步投递器:SyncMarkdownFolder → 入队 → worker 落 kb_chunks。
+	platformService := platform.NewService(db, rds, cfg.JWTKeyBytes(), publisher, embedder, jobsClient,
+		[]byte(cfg.CredentialEncryptionKey))
+	endpointPolicy := tool.NewEndpointPolicy(cfg.ToolAllowedHosts, cfg.ToolAllowPrivateNetwork)
+	platformService.Tool.ConfigureEndpointPolicy(endpointPolicy)
+	platformService.ModelConfig.ConfigureEndpointPolicy(endpointPolicy)
+	platformService.ModelConfig.SetCredential(modelconfig.DefaultCredentialRef, cfg.LLMAPIKey)
+	platformService.KB.ConfigureMarkdownAllowedRoots(cfg.KBMarkdownAllowedRoots)
+	if err := platformService.Tool.MigrateLegacyCredentials(ctx); err != nil {
+		log.Fatalf("migrate legacy tool credentials: %v", err)
 	}
-	shutdownTracing, err := courseotel.Setup(context.Background(), "ecommerce-ops-agent")
-	if err != nil {
-		log.Fatalf("configure tracing: %v", err)
-	}
-	defer func() {
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		if err := shutdownTracing(shutdownCtx); err != nil {
-			log.Printf("shutdown tracing: %v", err)
+
+	// 首启自动 seed admin:让 `make up && open localhost:8080` 直接能登录(make seed 沦为可选)
+	if cfg.AutoseedAdmin {
+		if err := platformService.IAM.EnsureSeedAdmin(ctx, cfg.AutoseedAdminEmail, cfg.AutoseedAdminPassword); err != nil {
+			log.Printf("autoseed admin: %v", err)
+		} else {
+			log.Printf("✅ admin ready: %s", cfg.AutoseedAdminEmail)
 		}
-	}()
-
-	// 启动时先建立并验证 PostgreSQL 连接；数据库不可用时直接失败，
-	// 避免服务看似启动成功、实际请求才不断报持久化错误。
-	databaseContext, databaseCancel := context.WithTimeout(context.Background(), 10*time.Second)
-	pool, err := postgresinfra.Open(databaseContext, cfg.DatabaseURL)
-	databaseCancel()
-	if err != nil {
-		log.Fatalf("connect PostgreSQL: %v", err)
-	}
-	defer pool.Close()
-	iamService := iam.New(iam.NewPostgresStore(pool), cfg.JWTSecret, cfg.JWTIssuer)
-
-	// 初始化LLM
-	gateway, err := llm.NewGateway(cfg)
-	if err != nil {
-		log.Fatalf("create LLM Gateway failed, err:%v", err)
-	}
-
-	// Agent 控制面同时实现 Engine 所需的会话与快照读取接口。
-	agents := agent.NewPostgresService(pool)
-	teams := platformteam.NewPostgresService(agents, pool)
-	runtime := engine.New(agents, gateway)
-	toolRegistry := platformtool.NewRegistry()
-	// 第 10 课使用进程内存保存知识库和文档，服务重启后数据会丢失。
-	knowledgeBases := kb.NewService()
-	// 检索服务通过 DocumentSource 接口读取 knowledgeBases 中已经切好的文档。
-	knowledgeSearch := retriever.NewKnowledgeSearch(knowledgeBases)
-	// 第 12 课新增的提示词和模型配置版本注册表。
-	prompts := prompt.NewService()
-	profiles := modelconfig.NewRegistry([]byte(cfg.JWTSecret))
-	skills := skill.NewService()
-	approvals := approval.NewPostgresService(pool)
-	guards := guard.NewService(guard.NewPipeline(
-		guard.MaxLengthRule{MaxRunes: 8000}, guard.InjectionRule{}, guard.PIIRule{},
-	))
-	auditLedger := audit.NewPostgresLedger(pool)
-	evaluator := platformeval.NewService()
-	evalData := platformeval.NewPostgresCatalog(pool)
-	sandboxClient, err := sandbox.NewClient(cfg.SandboxRunnerURL, cfg.SandboxRunnerToken)
-	if err != nil {
-		log.Fatalf("create sandbox runner client: %v", err)
-	}
-	toolExecutor := tooling.NewExecutor(toolRegistry, nil, "crossborder-sim", "localhost", "127.0.0.1").WithSandbox(sandboxClient)
-	// 将知识检索注册为进程内工具：模型调用时不发 HTTP，而是直接执行 Go 函数。
-	toolExecutor.RegisterSDK("search_knowledge_base", func(
-		ctx context.Context, workspaceID string, arguments map[string]any,
-	) (tooling.Result, error) {
-		kbID, _ := arguments["kb_id"].(string)
-		query, _ := arguments["query"].(string)
-		mode, _ := arguments["mode"].(string)
-		topK := 5
-		// Executor 使用 decoder.UseNumber()，因此 JSON 数字在 map 中是 json.Number。
-		if number, ok := arguments["top_k"].(json.Number); ok {
-			if value, parseErr := number.Int64(); parseErr == nil {
-				topK = int(value)
+		if err := platformService.IAM.EnsureSeedWorkspaces(ctx); err != nil {
+			log.Printf("autoseed workspaces: %v", err)
+		} else {
+			log.Printf("✅ default business workspaces ready")
+		}
+		if err := platformService.IAM.EnsureSeedWorkspaceOwners(ctx, cfg.AutoseedAdminEmail); err != nil {
+			log.Printf("autoseed workspace owners: %v", err)
+		}
+		if cfg.LLMAPIKey != "" {
+			if err := ensureDefaultModelConfigs(ctx, platformService, cfg); err != nil {
+				log.Printf("autoseed model configs: %v", err)
+			} else {
+				log.Printf("✅ default workspace model configs ready")
 			}
 		}
-		results, searchErr := knowledgeSearch.Search(ctx, workspaceID, kbID, query, mode, topK)
-		if searchErr != nil {
-			return tooling.Result{}, searchErr
-		}
-		body, marshalErr := json.Marshal(results)
-		return tooling.Result{StatusCode: http.StatusOK, Body: body}, marshalErr
-	})
-	runtime.WithTools(toolExecutor).WithRuntimeConfig(prompts, profiles).WithSkills(skills).
-		WithApprovals(approvals).WithGuard(guards).WithAudit(auditLedger)
-	approvalWorker := engine.NewApprovalWorker(approvals, runtime, "course-server-worker")
-	replayGuard := replay.NewPostgres(pool, replay.DefaultWindow)
-	channelConsumer := integration.NewRuntimeConsumer(
-		agents, runtime, cfg.ChannelWorkspaceID, cfg.ChannelAgentID, cfg.ChannelAgentEnv,
-		func(source, eventID, answer string) {
-			log.Printf("channel answer source=%s event_id=%s answer=%q", source, eventID, answer)
-		},
-	)
-
-	// 创建HTTP server，监听8080端口
-	// 客户端必须在五秒内发送完 HTTP Header，否则服务端终止读取。这可以避免客户端长时间占用连接
-	server := &http.Server{
-		Addr: cfg.HTTPAddr,
-		Handler: api.NewRouterWithControlPlane(iamService, runtime, api.ControlPlane{
-			Agents: agents, Approvals: approvals, Audit: auditLedger,
-			Tools: toolRegistry, KBs: knowledgeBases, Search: knowledgeSearch,
-			Prompts: prompts, Profiles: profiles, Skills: skills, Guard: guards,
-			Evaluator: evaluator, EvalData: evalData, Teams: teams,
-			Webhook:        webhook.NewHandlerWithReplay(cfg.WebhookSecret, replayGuard, channelConsumer.Callback("webhook")),
-			Lark:           lark.NewHandlerWithReplay(cfg.LarkEncryptKey, replayGuard, channelConsumer.Callback("lark")),
-			ApprovalWorker: approvalWorker,
-		}),
-		ReadHeaderTimeout: 5 * time.Second,
-		ReadTimeout:       15 * time.Second,
-		IdleTimeout:       60 * time.Second,
 	}
 
-	// 优雅退出逻辑
-	ctx, stop := signal.NotifyContext(
-		context.Background(),
-		syscall.SIGINT,
-		syscall.SIGTERM,
-	)
-	defer stop()
+	// 启动 Prompt 缓存订阅器：收到失效通知后异步重拉编译产物（Apollo 风格推送）
+	promptSub := promptcache.NewSubscriber(rds, platformService.Prompt.RefreshCache)
 	go func() {
-		if err := approvalWorker.Run(ctx); err != nil && !errors.Is(err, context.Canceled) {
-			log.Printf("approval worker stopped: %v", err)
+		if err := promptSub.Run(ctx); err != nil && ctx.Err() == nil {
+			log.Printf("prompt subscriber stopped: %v", err)
 		}
 	}()
 
-	go func() {
-		<-ctx.Done()
+	// Runtime装配
+	log.Println("Initializing runtime...")
+	llmGateway := llm.NewGateway()
+	llmGateway.WithConfigResolver(platformService.ModelConfig)
+	// 模型调用计量包含 Prompt Cache 命中量。
+	if db != nil {
+		llmGateway.WithCallSink(llm.NewPgModelCallSink(db))
+	}
+	llmGateway.WithEndpointPolicy(endpointPolicy)
 
-		shutdownCtx, cancel := context.WithTimeout(
-			context.Background(),
-			5*time.Second,
+	runtime := engine.NewEngine(platformService.Agent, llmGateway, platformService.Registry).
+		WithGuard(platformService.Guard).
+		WithAudit(platformService.Audit).
+		WithToolAudit(platformService.Tool).
+		WithApprovals(platformService.ApprovalGate()).
+		WithTracing(engine.TraceOptions{CaptureContent: cfg.OTELCaptureContent})
+	defer platformService.Audit.Close()
+
+	// HTTP服务装配
+	log.Println("Initializing HTTP server...")
+	handler := api.NewHandler(platformService, runtime, jobsClient).
+		SetAllowedOrigins(cfg.CORSAllowedOrigins).
+		SetIdempotencyStore(cache.NewRedisIdemStore(rds)).
+		SetObservability(api.ObservabilityConfig{
+			OTLPEndpoint: cfg.OTLPEndpoint, LangfuseUIURL: cfg.LangfuseUIURL,
+			LangfuseProjectID: cfg.LangfuseProjectID,
+		}).
+		SetReadiness(
+			api.ReadinessCheck{Name: "postgres", Check: db.Ping},
+			api.ReadinessCheck{Name: "redis", Check: func(ctx context.Context) error { return rds.Ping(ctx).Err() }},
 		)
-		defer cancel()
 
-		_ = server.Shutdown(shutdownCtx)
+	srv := &http.Server{
+		Addr:              cfg.Addr,
+		Handler:           handler.Routes(),
+		ReadHeaderTimeout: 10 * time.Second,
+		// SSE 是长连接，因此不设置整体 WriteTimeout。
+	}
+
+	// 启动HTTP服务
+	go func() {
+		log.Printf("e-commerce operations agent server listening on %s", cfg.Addr)
+		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			log.Fatalf("server error: %v", err)
+		}
 	}()
 
-	// 启动服务
-	log.Printf("server listening on %s", cfg.HTTPAddr)
-	if err := server.ListenAndServe(); !errors.Is(err, http.ErrServerClosed) {
+	// 等待停止信号
+	<-ctx.Done()
+	log.Println("shutting down...")
+
+	// 优雅关闭
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	_ = srv.Shutdown(shutdownCtx)
+
+	log.Println("server stopped")
+}
+
+func ensureDefaultModelConfigs(ctx context.Context, services *platform.Service, cfg config.Config) error {
+	workspaces, err := services.IAM.ListWorkspaces(ctx, 200, 0)
+	if err != nil {
+		return err
+	}
+	workspaceByName := make(map[string]string, len(workspaces))
+	for _, workspace := range workspaces {
+		workspaceByName[workspace.Name] = workspace.ID
+	}
+	seeds := []struct {
+		workspaceName string
+		configName    string
+	}{
+		{
+			workspaceName: "跨境电商运营平台",
+			configName:    "默认模型配置",
+		},
+	}
+	for _, seed := range seeds {
+		workspaceID := workspaceByName[seed.workspaceName]
+		if workspaceID == "" {
+			return fmt.Errorf("default workspace %q not found", seed.workspaceName)
+		}
+		if _, err := services.ModelConfig.EnsureConfigVersion(ctx, modelconfig.EnsureConfigRequest{
+			WorkspaceID: workspaceID, Name: seed.configName, ProviderKind: "openai-compatible",
+			BaseURL: cfg.LLMBaseURL, ModelName: cfg.LLMModel,
+			CredentialRef: modelconfig.DefaultCredentialRef,
+			TimeoutMS:     cfg.LLMTimeoutMS, MaxRetries: cfg.LLMMaxRetries,
+			InputPricePerMillion:       cfg.LLMInputPricePerMillion,
+			OutputPricePerMillion:      cfg.LLMOutputPricePerMillion,
+			CachedInputPricePerMillion: cfg.LLMCachedInputPricePerMillion,
+			CreatedBy:                  "system",
+		}); err != nil {
+			return fmt.Errorf("seed model config for %q: %w", seed.workspaceName, err)
+		}
+	}
+	return nil
+}
+
+func must(err error) {
+	if err != nil {
 		log.Fatal(err)
 	}
 }

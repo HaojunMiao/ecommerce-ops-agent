@@ -1,24 +1,35 @@
-// Package connector 定义知识源接入协议。
+// Package connector 定义 KB 数据源接入的统一抽象。
+//
+// 本平台只实现一个 reference connector（markdown_folder）。接 Confluence / GitLab /
+// 企业网盘等真实数据源，本质都是同样的接口加上 OAuth 与分页——作为扩展练习。
 package connector
 
-import "context"
+import (
+	"context"
+	"io"
+	"time"
+)
 
-// Document 是所有知识源统一输出的标准文档。
-// Connector 只负责把外部内容转换到这一层，后续切片、向量化和索引
-// 都由知识库服务统一处理。
-type Document struct {
-	// SourceURI 是文档在知识源中的稳定位置，用于识别同一份文档。
-	SourceURI string
-	// Title 用于管理端展示和后续检索结果引用。
-	Title string
-	// Content 保留文档的完整原始文本。
-	Content string
-	// Checksum 用于判断同一路径下的文档内容是否发生变化。
-	Checksum string
+// DocMeta 是一份文档的元信息。Hash 用来在 KB 端判断是否需要重新 ingest。
+type DocMeta struct {
+	ID        string
+	Title     string
+	UpdatedAt time.Time
+	Hash      string
 }
 
-// Connector 屏蔽不同知识源的读取方式。
-// 例如本地 Markdown、对象存储和在线文档都可以实现该接口。
+// Connector 是可插拔的数据源接入抽象。
 type Connector interface {
-	Scan(ctx context.Context) ([]Document, error)
+	Name() string
+	// ListDocuments 返回当前游标之后的批量文档元信息（增量）。
+	ListDocuments(ctx context.Context, cursor string) (docs []DocMeta, nextCursor string, err error)
+	// FetchDocument 取一份文档的内容。
+	FetchDocument(ctx context.Context, docID string) (io.ReadCloser, error)
+}
+
+// SnapshotConnector 表示 ListDocuments 返回该来源当前的完整快照，而不只是增量页。
+// KB 同步可据此删除已经从来源消失的文档；增量连接器不应实现该接口。
+type SnapshotConnector interface {
+	Connector
+	OwnsSource(sourceURI string) bool
 }

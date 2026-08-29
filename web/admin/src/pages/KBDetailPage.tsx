@@ -30,7 +30,7 @@ export function KBDetailPage() {
         <Typography.Title level={4} style={{ margin: 0 }}>
           {kb.name}
         </Typography.Title>
-        <Tag>{kb.embedding_model || 'local'}</Tag>
+        <Tag>{kb.embedding_model || '-'}</Tag>
         <Tag color="green">{kb.status}</Tag>
       </Space>
 
@@ -47,13 +47,13 @@ export function KBDetailPage() {
   )
 }
 
-// 三列对比:BM25 / 向量 / 混合,各展示 top-k chunk 与分数。
+// 三列对比:中文关键词 / 向量 / RRF 混合,各展示 top-k chunk 与分数。
 function SearchPlayground({ kbId }: { kbId: string }) {
   const [query, setQuery] = useState('怎么申请退款?')
   const MODES: { mode: SearchMode; title: string }[] = [
-    { mode: 'bm25', title: 'BM25(关键词)' },
+    { mode: 'bm25', title: '关键词(中文分词)' },
     { mode: 'vector', title: '向量(语义)' },
-    { mode: 'hybrid', title: '混合 + Rerank' },
+    { mode: 'hybrid', title: '混合(RRF)' },
   ]
   const [results, setResults] = useState<Record<string, Passage[]>>({})
   const [loading, setLoading] = useState(false)
@@ -145,7 +145,7 @@ function ConnectorsTab({ kbId }: { kbId: string }) {
   const sync = useMutation({
     mutationFn: () => syncMarkdown(kbId, path),
     onSuccess: (r) => {
-      message.success(`同步完成:列出 ${r.listed},ingest ${r.ingested},跳过 ${r.skipped}`)
+      message.success(`同步完成:列出 ${r.listed},ingest ${r.ingested},删除 ${r.deleted},跳过 ${r.skipped}`)
       connsQ.refetch()
     },
   })

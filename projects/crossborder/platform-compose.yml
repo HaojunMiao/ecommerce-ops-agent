@@ -1,0 +1,35 @@
+services:
+  app:
+    environment:
+      KBOT_AUTOSEED_ADMIN: "true"
+      KBOT_AUTOSEED_ADMIN_EMAIL: admin@ecommerce-ops.local
+      KBOT_AUTOSEED_ADMIN_PASSWORD: admin12345
+      KBOT_KB_MARKDOWN_ALLOWED_ROOTS: /scenarios
+    volumes:
+      - ${PWD}/projects/crossborder/knowledge:/scenarios/crossborder/knowledge:ro
+    depends_on:
+      crossborder-sim:
+        condition: service_healthy
+
+  worker:
+    environment:
+      KBOT_KB_MARKDOWN_ALLOWED_ROOTS: /scenarios
+    volumes:
+      - ${PWD}/projects/crossborder/knowledge:/scenarios/crossborder/knowledge:ro
+    depends_on:
+      crossborder-sim:
+        condition: service_healthy
+
+  crossborder-sim:
+    build:
+      context: ../projects/crossborder
+      dockerfile: Dockerfile
+    ports:
+      - "${CROSSBORDER_PORT:-8091}:8091"
+    environment:
+      CROSSBORDER_ADDR: ":8091"
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "-", "http://127.0.0.1:8091/healthz"]
+      interval: 3s
+      timeout: 2s
+      retries: 10

@@ -1,133 +1,284 @@
-// Package llm 把模型 SDK 收敛为 Runtime 使用的稳定接口，并构造 Eino ADK 模型执行策略。
+// Package llm 提供LLM网关实现
 package llm
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/json"
+	"errors"
 	"fmt"
-	"strings"
+	"io"
+	"net/http"
+	"sync"
 	"time"
 
+	"github.com/HaojunMiao/ecommerce-ops-agent/internal/domain"
 	"github.com/cloudwego/eino-ext/components/model/openai"
 	"github.com/cloudwego/eino/adk"
 	"github.com/cloudwego/eino/components/model"
 	"github.com/cloudwego/eino/schema"
-
-	"github.com/HaojunMiao/ecommerce-ops-agent/internal/config"
-	"github.com/HaojunMiao/ecommerce-ops-agent/internal/platform/modelconfig"
 )
 
-// ExecutionPlan 是已解析的本次运行计划：主模型负责首次调用，Retry 和 Failover
-// 直接交给 Eino ADK 在 ReAct 迭代中执行。
-type ExecutionPlan struct {
-	Model    model.BaseChatModel
-	Retry    *adk.ModelRetryConfig
-	Failover *adk.ModelFailoverConfig[*schema.Message]
+// provider 是一路可调用的模型配置。
+type provider struct {
+	model                      model.ToolCallingChatModel
+	system                     string // gen_ai.system:openai-compatible
+	modelID                    string // gen_ai.request.model
+	inputPricePerMillion       float64
+	outputPricePerMillion      float64
+	cachedInputPricePerMillion float64
 }
 
+// ResolvedModelConfig is one immutable and directly callable model configuration.
+type ResolvedModelConfig struct {
+	ID                         string
+	ProviderKind               string
+	BaseURL                    string
+	APIKey                     string
+	Model                      string
+	TimeoutMS                  int
+	MaxRetries                 int
+	InputPricePerMillion       float64
+	OutputPricePerMillion      float64
+	CachedInputPricePerMillion float64
+}
+
+type ConfigResolver interface {
+	ResolveConfig(ctx context.Context, versionID string) (*ResolvedModelConfig, error)
+}
+
+// Gateway LLM网关
+//
+
+// 把 Eino 的 ToolCallingChatModel 收敛在一处，上层只依赖稳定方法。
 type Gateway struct {
-	model   model.BaseChatModel
-	timeout time.Duration
+	sink      ModelCallSink // 调用计量落库(model_call_logs);默认 NopSink
+	configs   ConfigResolver
+	models    sync.Map // model config version/generation config -> provider
+	endpoints interface {
+		ValidateURL(context.Context, string) error
+		HTTPClient(time.Duration) *http.Client
+	}
 }
 
-func NewGateway(cfg config.Config) (*Gateway, error) {
-	// 初始化大模型连接
-	// 拿到一个chatmodel，给到Gateway的model字段
-	chatModel, err := openai.NewChatModel(context.Background(), &openai.ChatModelConfig{
-		APIKey:  cfg.LLMAPIKey,
-		BaseURL: cfg.LLMBaseURL,
-		Model:   cfg.LLMModel,
-		Timeout: cfg.LLMTimeout,
-	})
+// ExecutionPlan 把一次 Agent 运行所需的模型与重试策略交给 Eino ADK。
+type ExecutionPlan struct {
+	Model model.BaseChatModel
+	Retry *adk.ModelRetryConfig
+}
+
+// NewGateway 创建只按不可变模型配置版本路由的网关。
+// 部署环境只提供 CredentialRef 对应的密钥，不再构成第二套模型配置来源。
+func NewGateway() *Gateway { return &Gateway{sink: NopSink{}} }
+
+// WithCallSink 注入调用计量落库器(db != nil 时为 PgModelCallSink)。返回自身便于链式。
+func (g *Gateway) WithCallSink(sink ModelCallSink) *Gateway {
+	if sink != nil {
+		g.sink = sink
+	}
+	return g
+}
+
+func (g *Gateway) WithConfigResolver(resolver ConfigResolver) *Gateway {
+	g.configs = resolver
+	return g
+}
+
+func (g *Gateway) WithEndpointPolicy(policy interface {
+	ValidateURL(context.Context, string) error
+	HTTPClient(time.Duration) *http.Client
+}) *Gateway {
+	g.endpoints = policy
+	return g
+}
+
+// PrepareExecution resolves one immutable model configuration and builds Eino's execution options.
+func (g *Gateway) PrepareExecution(ctx context.Context) (*ExecutionPlan, error) {
+	classification := classificationFromContext(ctx)
+	inv := invocationFromContext(ctx)
+	candidate, err := g.providerFor(ctx, inv)
 	if err != nil {
-		return nil, fmt.Errorf("create chat model failed, err:%w", err)
+		return nil, err
 	}
-
-	return &Gateway{model: chatModel, timeout: cfg.LLMTimeout}, nil
-}
-
-// PrepareExecution 把模型配置版本中的有序部署转换为 Eino ADK 的重试和故障切换策略。
-// 第一个部署是主模型，后续部署按顺序作为备用模型。
-func (g *Gateway) PrepareExecution(ctx context.Context, profile modelconfig.ProfileVersion) (*ExecutionPlan, error) {
-	if g == nil || len(profile.Deployments) == 0 {
-		return nil, fmt.Errorf("model profile has no deployments")
-	}
-	models := make([]model.BaseChatModel, 0, len(profile.Deployments))
-	maxRetries := 0
-	for index, deployment := range profile.Deployments {
-		if !supportedProvider(deployment.Provider) {
-			return nil, fmt.Errorf("deployment %d: unsupported provider %q", index, deployment.Provider)
-		}
-		selected, err := openai.NewChatModel(ctx, &openai.ChatModelConfig{
-			APIKey: deployment.APIKey, BaseURL: deployment.BaseURL, Model: deployment.Model, Timeout: g.timeout,
-		})
-		if err != nil {
-			return nil, fmt.Errorf("deployment %d: %w", index, err)
-		}
-		models = append(models, selected)
-		if deployment.MaxRetries > maxRetries {
-			maxRetries = deployment.MaxRetries
-		}
-	}
-	plan := &ExecutionPlan{Model: models[0]}
-	if maxRetries > 0 {
-		plan.Retry = &adk.ModelRetryConfig{MaxRetries: maxRetries}
-	}
-	if len(models) > 1 {
-		plan.Failover = &adk.ModelFailoverConfig[*schema.Message]{
-			MaxRetries: uint(len(models) - 1),
-			ShouldFailover: func(_ context.Context, _ *schema.Message, callErr error) bool {
-				return callErr != nil
-			},
-			GetFailoverModel: func(_ context.Context, failover *adk.FailoverContext[*schema.Message]) (model.BaseChatModel, []*schema.Message, error) {
-				index := int(failover.FailoverAttempt)
-				if index <= 0 || index >= len(models) {
-					return nil, nil, fmt.Errorf("model failover attempt %d is out of range", index)
-				}
-				return models[index], nil, nil
-			},
-		}
+	plan := &ExecutionPlan{Model: &managedModel{
+		gateway: g, provider: candidate.provider, invocation: inv, classification: classification,
+	}}
+	if candidate.retries > 0 {
+		plan.Retry = &adk.ModelRetryConfig{MaxRetries: candidate.retries}
 	}
 	return plan, nil
 }
 
-func supportedProvider(provider string) bool {
-	switch strings.ToLower(strings.TrimSpace(provider)) {
-	case "openai-compatible", "openai", "deepseek", "doubao":
-		return true
-	default:
-		return false
-	}
+type providerCandidate struct {
+	provider provider
+	retries  int
 }
 
-func (g *Gateway) Generate(
-	ctx context.Context,
-	messages []*schema.Message,
-	opts ...model.Option,
-) (*schema.Message, error) {
-	if g == nil || g.model == nil {
-		return nil, fmt.Errorf("chat model is required")
+func (g *Gateway) providerFor(ctx context.Context, inv InvocationConfig) (providerCandidate, error) {
+	if inv.ModelConfigVersionID == "" {
+		return providerCandidate{}, fmt.Errorf("model_config_version_id is required")
 	}
-	// 调用eino的Generate
-	resp, err := g.model.Generate(ctx, messages, opts...)
+	if g.configs == nil {
+		return providerCandidate{}, fmt.Errorf("model config resolver is not configured")
+	}
+	resolved, err := g.configs.ResolveConfig(ctx, inv.ModelConfigVersionID)
 	if err != nil {
-		return nil, fmt.Errorf("generate resp failed, err:%w", err)
+		return providerCandidate{}, fmt.Errorf("resolve model config: %w", err)
 	}
-	return resp, nil
+	p, err := g.dynamicProvider(ctx, resolved, inv.GenerationConfig)
+	if err != nil {
+		return providerCandidate{}, err
+	}
+	return providerCandidate{provider: p, retries: resolved.MaxRetries}, nil
 }
 
-// 类似Generate，相当于包了一层Gateway而已
-// 和eino chatmodel提供的Stream()的参数都一样，就是调用eino的Stream()
-func (g *Gateway) Stream(
-	ctx context.Context,
-	messages []*schema.Message,
-	opts ...model.Option,
-) (*schema.StreamReader[*schema.Message], error) {
-	if g == nil || g.model == nil {
-		return nil, fmt.Errorf("chat model is required")
+func (g *Gateway) dynamicProvider(ctx context.Context, d *ResolvedModelConfig, cfg domain.GenerationConfig) (provider, error) {
+	if g.endpoints != nil {
+		if err := g.endpoints.ValidateURL(ctx, d.BaseURL); err != nil {
+			return provider{}, fmt.Errorf("validate model config %s endpoint: %w", d.ID, err)
+		}
 	}
-	stream, err := g.model.Stream(ctx, messages, opts...)
+	cacheInput, _ := json.Marshal(struct {
+		Config     ResolvedModelConfig
+		Generation domain.GenerationConfig
+	}{Config: *d, Generation: cfg})
+	cacheHash := sha256.Sum256(cacheInput)
+	key := fmt.Sprintf("%s:%x", d.ID, cacheHash)
+	if cached, ok := g.models.Load(key); ok {
+		return cached.(provider), nil
+	}
+	timeout := time.Duration(d.TimeoutMS) * time.Millisecond
+	if timeout <= 0 {
+		timeout = 30 * time.Second
+	}
+	modelConfig := &openai.ChatModelConfig{
+		APIKey: d.APIKey, BaseURL: d.BaseURL, Model: d.Model, Timeout: timeout,
+		MaxCompletionTokens: cfg.MaxOutputTokens, Temperature: cfg.Temperature,
+		TopP: cfg.TopP, Stop: cfg.Stop, Seed: cfg.Seed,
+	}
+	if g.endpoints != nil {
+		modelConfig.HTTPClient = g.endpoints.HTTPClient(timeout)
+	}
+	m, err := openai.NewChatModel(ctx, modelConfig)
 	if err != nil {
-		return nil, fmt.Errorf("stream resp failed, err:%w", err)
+		return provider{}, fmt.Errorf("create model config %s: %w", d.ID, err)
 	}
-	return stream, nil
+	p := provider{
+		model: m, system: d.ProviderKind, modelID: d.Model,
+		inputPricePerMillion: d.InputPricePerMillion, outputPricePerMillion: d.OutputPricePerMillion,
+		cachedInputPricePerMillion: d.CachedInputPricePerMillion,
+	}
+	g.models.Store(key, p)
+	return p, nil
+}
+
+// managedModel 包装模型调用，补充追踪、成本与审计。
+type managedModel struct {
+	gateway        *Gateway
+	provider       provider
+	invocation     InvocationConfig
+	classification string
+}
+
+func (m *managedModel) Generate(ctx context.Context, messages []*schema.Message, opts ...model.Option) (*schema.Message, error) {
+	var response *schema.Message
+	startedAt := time.Now()
+	result, callErr := withSpan(ctx, m.provider.system, m.provider.modelID, func(ctx context.Context) (callResult, error) {
+		generated, err := m.provider.model.Generate(ctx, messages, opts...)
+		if err != nil {
+			return callResult{input: marshalJSON(messages)}, err
+		}
+		response = generated
+		return modelCallResult(messages, generated), nil
+	})
+	m.finish(ctx, result, startedAt, callErr)
+	if callErr != nil {
+		return nil, callErr
+	}
+	return response, nil
+}
+
+func (m *managedModel) Stream(ctx context.Context, messages []*schema.Message, opts ...model.Option) (*schema.StreamReader[*schema.Message], error) {
+	inputStream, err := m.provider.model.Stream(ctx, messages, opts...)
+	if err != nil {
+		m.finish(ctx, callResult{input: marshalJSON(messages)}, time.Now(), err)
+		return nil, err
+	}
+	output, writer := schema.Pipe[*schema.Message](1)
+	startedAt := time.Now()
+	go func() {
+		defer writer.Close()
+		defer inputStream.Close()
+		chunks := make([]*schema.Message, 0, 8)
+		result, callErr := withSpan(ctx, m.provider.system, m.provider.modelID, func(context.Context) (callResult, error) {
+			for {
+				chunk, recvErr := inputStream.Recv()
+				if errors.Is(recvErr, io.EOF) {
+					break
+				}
+				if recvErr != nil {
+					return callResult{input: marshalJSON(messages)}, recvErr
+				}
+				chunks = append(chunks, chunk)
+				if writer.Send(chunk, nil) {
+					return callResult{input: marshalJSON(messages)}, context.Canceled
+				}
+			}
+			merged, concatErr := schema.ConcatMessages(chunks)
+			if concatErr != nil {
+				return callResult{input: marshalJSON(messages)}, concatErr
+			}
+			return modelCallResult(messages, merged), nil
+		})
+		m.finish(context.WithoutCancel(ctx), result, startedAt, callErr)
+		if callErr != nil {
+			writer.Send(nil, callErr)
+		}
+	}()
+	return output, nil
+}
+
+func (m *managedModel) finish(ctx context.Context, result callResult, startedAt time.Time, callErr error) {
+	actualCost := tokenCost(m.provider, result.inputTokens, result.outputTokens, result.cachedTokens)
+	status := "ok"
+	if callErr != nil {
+		status = "error"
+	}
+	m.gateway.sink.Record(ctx, CallUsage{
+		Provider: m.provider.system,
+		Model:    m.provider.modelID, InputTokens: result.inputTokens, OutputTokens: result.outputTokens,
+		CachedTokens: result.cachedTokens, LatencyMs: int(time.Since(startedAt).Milliseconds()),
+		Status: status, Classification: m.classification, WorkspaceID: m.invocation.WorkspaceID,
+		AgentID: m.invocation.AgentID, UserID: m.invocation.UserID, PromptVersionID: m.invocation.PromptVersionID,
+		ModelConfigVersionID: m.invocation.ModelConfigVersionID, Cost: actualCost,
+	})
+}
+
+func modelCallResult(messages []*schema.Message, response *schema.Message) callResult {
+	result := callResult{input: marshalJSON(messages), output: marshalJSON(response)}
+	if response == nil || response.ResponseMeta == nil {
+		return result
+	}
+	result.finishReason = response.ResponseMeta.FinishReason
+	if response.ResponseMeta.Usage != nil {
+		result.inputTokens = response.ResponseMeta.Usage.PromptTokens
+		result.outputTokens = response.ResponseMeta.Usage.CompletionTokens
+		result.cachedTokens = response.ResponseMeta.Usage.PromptTokenDetails.CachedTokens
+	}
+	return result
+}
+
+func marshalJSON(value any) string {
+	raw, _ := json.Marshal(value)
+	return string(raw)
+}
+
+func tokenCost(p provider, inputTokens, outputTokens, cachedTokens int) float64 {
+	uncached := inputTokens - cachedTokens
+	if uncached < 0 {
+		uncached = 0
+	}
+	return (float64(uncached)*p.inputPricePerMillion +
+		float64(cachedTokens)*p.cachedInputPricePerMillion +
+		float64(outputTokens)*p.outputPricePerMillion) / 1_000_000
 }

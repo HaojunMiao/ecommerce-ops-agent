@@ -3,102 +3,122 @@ package httpapi
 import (
 	"encoding/json"
 	"errors"
-	"io"
 	"net/http"
-	"strings"
 
-	"github.com/HaojunMiao/ecommerce-ops-agent/projects/crossborder/internal/domain"
 	"github.com/HaojunMiao/ecommerce-ops-agent/projects/crossborder/internal/service"
 )
 
-type Service interface {
-	GetOrder(id string) (domain.Order, bool)
-	Inventory(sku string) []domain.InventoryBalance
-	CreateTransfer(req service.TransferRequest) (domain.InventoryTransfer, error)
-}
-
-func New(svc Service) http.Handler {
+func New(svc *service.Service) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte("ok"))
+		writeJSON(w, http.StatusOK, map[string]string{"status": "ok", "project": "crossborder"})
 	})
-
-	// 注册业务相关接口
-
-	// 这里的接口方法怎么和service.go中的方法联系和绑定: cmd/main.go里面会调用service.NewSeeded()
-	// 即实现了接口
-
-	// 1. 查订单  GET /api/orders/ORD-123
-	mux.HandleFunc("GET /api/orders/{orderID}", func(w http.ResponseWriter, r *http.Request) {
-		order, ok := svc.GetOrder(strings.TrimSpace(r.PathValue("orderID")))
-		if !ok {
-			// 不存在这个OrderID
-			writeError(w, http.StatusNotFound, "order_not_found")
+	mux.HandleFunc("POST /tools/get_order", func(w http.ResponseWriter, r *http.Request) {
+		var in struct {
+			OrderID string `json:"order_id"`
+		}
+		if !decode(w, r, &in) {
 			return
 		}
-		writeJSON(w, http.StatusOK, order)
+		out, err := svc.GetOrder(in.OrderID)
+		respond(w, out, err)
 	})
-
-	// 2. 查库存  GET /api/inventory?sku=xxx
-	mux.HandleFunc("GET /api/inventory", func(w http.ResponseWriter, r *http.Request) {
-		// query参数传sku
-		sku := strings.TrimSpace(r.URL.Query().Get("sku"))
-		if len(sku) == 0 {
-			writeError(w, http.StatusBadRequest, "sku_is_required")
+	mux.HandleFunc("POST /tools/get_inventory", func(w http.ResponseWriter, r *http.Request) {
+		var in struct {
+			SKU string `json:"sku"`
+		}
+		if !decode(w, r, &in) {
 			return
 		}
-
-		data := svc.Inventory(sku)
-		writeJSON(w, http.StatusOK, data)
+		respond(w, map[string]any{"sku": in.SKU, "balances": svc.Inventory(in.SKU)}, nil)
 	})
-
-	// 3. 创建仓库调拨单
-	// 会改变库存数据，即POST请求
-	mux.HandleFunc("POST /api/transfers", func(w http.ResponseWriter, r *http.Request) {
-		// 解析请求
-		var req service.TransferRequest
-		if err := decodeJSON(w, r, &req); err != nil {
-			writeError(w, http.StatusBadRequest, "invalid_json")
+	mux.HandleFunc("POST /tools/get_shipping_options", func(w http.ResponseWriter, r *http.Request) {
+		var in struct {
+			OrderID string `json:"order_id"`
+		}
+		if !decode(w, r, &in) {
 			return
 		}
-
-		transfer, err := svc.CreateTransfer(req)
-		if err != nil {
-			// 判断是哪种错误
-			status := http.StatusConflict
-			if errors.Is(err, service.ErrIdempotencyKey) || errors.Is(err, service.ErrInvalidTransition) {
-				status = http.StatusBadRequest
-			}
-			writeError(w, status, err.Error())
+		out, err := svc.ShippingOptions(in.OrderID)
+		respond(w, out, err)
+	})
+	mux.HandleFunc("POST /tools/get_statement", func(w http.ResponseWriter, r *http.Request) {
+		var in struct {
+			StatementID string `json:"statement_id"`
+		}
+		if !decode(w, r, &in) {
 			return
 		}
-		writeJSON(w, http.StatusCreated, transfer)
+		out, err := svc.GetStatement(in.StatementID)
+		respond(w, out, err)
 	})
-
+	mux.HandleFunc("POST /tools/create_inventory_transfer", func(w http.ResponseWriter, r *http.Request) {
+		var in struct {
+			SKU      string `json:"sku"`
+			From     string `json:"from_warehouse"`
+			To       string `json:"to_warehouse"`
+			Quantity int    `json:"quantity"`
+			Key      string `json:"idempotency_key"`
+			DryRun   bool   `json:"dry_run"`
+		}
+		if !decode(w, r, &in) {
+			return
+		}
+		out, err := svc.CreateTransfer(service.TransferRequest{SKU: in.SKU, FromWarehouse: in.From, ToWarehouse: in.To, Quantity: in.Quantity, IdempotencyKey: in.Key, DryRun: in.DryRun})
+		respond(w, out, err)
+	})
+	mux.HandleFunc("POST /tools/approve_refund", func(w http.ResponseWriter, r *http.Request) {
+		var in struct {
+			OrderID string  `json:"order_id"`
+			Amount  float64 `json:"amount"`
+			Reason  string  `json:"reason"`
+			Key     string  `json:"idempotency_key"`
+			DryRun  bool    `json:"dry_run"`
+		}
+		if !decode(w, r, &in) {
+			return
+		}
+		out, err := svc.ApproveRefund(service.RefundRequest{OrderID: in.OrderID, Amount: in.Amount, Reason: in.Reason, IdempotencyKey: in.Key, DryRun: in.DryRun})
+		respond(w, out, err)
+	})
+	mux.HandleFunc("POST /tools/create_reconciliation_case", func(w http.ResponseWriter, r *http.Request) {
+		var in struct {
+			StatementID string `json:"statement_id"`
+			Reason      string `json:"reason"`
+			Key         string `json:"idempotency_key"`
+			DryRun      bool   `json:"dry_run"`
+		}
+		if !decode(w, r, &in) {
+			return
+		}
+		out, err := svc.CreateReconciliation(service.ReconciliationRequest{StatementID: in.StatementID, Reason: in.Reason, IdempotencyKey: in.Key, DryRun: in.DryRun})
+		respond(w, out, err)
+	})
 	return mux
 }
 
-func decodeJSON(w http.ResponseWriter, r *http.Request, dst any) error {
-	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
-	decoder := json.NewDecoder(r.Body)
-	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(dst); err != nil {
-		return err
+func decode(w http.ResponseWriter, r *http.Request, value any) bool {
+	if err := json.NewDecoder(r.Body).Decode(value); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request body"})
+		return false
 	}
-	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
-		return errors.New("request body must contain one JSON object")
-	}
-	return nil
+	return true
 }
 
-// writeJSON 写响应的方法
+func respond(w http.ResponseWriter, value any, err error) {
+	if err == nil {
+		writeJSON(w, http.StatusOK, value)
+		return
+	}
+	status := http.StatusUnprocessableEntity
+	if errors.Is(err, service.ErrNotFound) {
+		status = http.StatusNotFound
+	}
+	writeJSON(w, status, map[string]string{"error": err.Error()})
+}
+
 func writeJSON(w http.ResponseWriter, status int, value any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(value)
-}
-
-func writeError(w http.ResponseWriter, status int, code string) {
-	writeJSON(w, status, map[string]string{"error": code})
 }

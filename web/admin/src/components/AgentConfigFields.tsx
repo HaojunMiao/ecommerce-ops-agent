@@ -1,6 +1,5 @@
-import { Alert, Form, Input, InputNumber, Radio, Select, Space, Switch, Tag, Typography } from 'antd'
+import { Alert, Form, InputNumber, Select, Space, Switch, Tag, Typography } from 'antd'
 import { useQuery } from '@tanstack/react-query'
-import { useState } from 'react'
 import { listPrompts } from '@/api/prompt'
 import { listTools } from '@/api/tool'
 import { listKBs } from '@/api/kb'
@@ -54,48 +53,21 @@ export function AgentConfigFields() {
   const selectedVersionIDs = Form.useWatch<string[]>('skill_version_ids') ?? []
   const selectedVersions = (versions.data ?? []).filter((version) => selectedVersionIDs.includes(version.id))
   const networkRequired = selectedVersions.some((version) => version.requiresNetwork)
-  const [systemSource, setSystemSource] = useState<'prompt-center' | 'literal'>(() => (
-    form.getFieldValue('system_prompt') && !form.getFieldValue('system_prompt_id') ? 'literal' : 'prompt-center'
-  ))
   const systemPrompts = (prompts.data ?? []).filter((item) => !item.category.endsWith('-user-template'))
   const userPromptTemplates = (prompts.data ?? []).filter((item) => item.category.endsWith('-user-template'))
 
-  const changeSystemSource = (source: 'prompt-center' | 'literal') => {
-    setSystemSource(source)
-    if (source === 'prompt-center') form.setFieldValue('system_prompt', undefined)
-    else form.setFieldValue('system_prompt_id', undefined)
-  }
-
   return (
     <>
-      <Form.Item label="System Prompt 来源">
-        <Radio.Group
-          value={systemSource}
-          optionType="button"
-          buttonStyle="solid"
-          onChange={(event) => changeSystemSource(event.target.value as 'prompt-center' | 'literal')}
-          options={[
-            { value: 'prompt-center', label: '绑定 Prompt Center' },
-            { value: 'literal', label: '使用字面量' },
-          ]}
+      <Form.Item name="system_prompt_id" label="绑定 System Prompt" rules={[{ required: true, message: '请选择版本化 System Prompt' }]}>
+        <Select
+          showSearch
+          optionFilterProp="label"
+          loading={prompts.isLoading}
+          onChange={() => form.setFieldValue('system_prompt_version_id', undefined)}
+          options={systemPrompts.map((prompt) => ({ value: prompt.id, label: `${prompt.name} · ${prompt.category}` }))}
+          placeholder="创建 Agent 版本时解析并固定当前 Prompt 版本"
         />
       </Form.Item>
-      {systemSource === 'literal' ? (
-        <Form.Item name="system_prompt" label="System Prompt（字面量）">
-          <Input.TextArea rows={4} placeholder="适合原型和简单 Agent" />
-        </Form.Item>
-      ) : (
-        <Form.Item name="system_prompt_id" label="绑定 System Prompt">
-          <Select
-            allowClear
-            showSearch
-            optionFilterProp="label"
-            loading={prompts.isLoading}
-            options={systemPrompts.map((prompt) => ({ value: prompt.id, label: `${prompt.name} · ${prompt.category}` }))}
-            placeholder="创建会话时按环境解析并固化 System Prompt 版本"
-          />
-        </Form.Item>
-      )}
       <Form.Item name="user_prompt_id" label="User Prompt Template（首轮任务，可选）">
         <Select
           allowClear
@@ -170,7 +142,7 @@ export function AgentConfigFields() {
         <Switch checkedChildren="已授权" unCheckedChildren="已关闭" />
       </Form.Item>
       <Typography.Paragraph type="secondary">
-        关闭后，REST、MCP 和 A2A 工具会在审批及执行前被 Runtime 拒绝。
+        关闭后，REST 工具会在审批及执行前被运行时拒绝。
       </Typography.Paragraph>
       <Form.Item name="max_steps" label="最大步数">
         <InputNumber min={1} max={50} style={{ width: '100%' }} />

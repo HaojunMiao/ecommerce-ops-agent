@@ -5,7 +5,7 @@ import { useLocation } from 'wouter'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { listPrompts, createPrompt, type CreatePromptRequest } from '@/api/prompt'
 import { CodeEditor } from '@/components/CodeEditor'
-import { ModelProfileVersionSelect } from '@/components/ModelProfileVersionSelect'
+import { ModelConfigVersionSelect } from '@/components/ModelConfigVersionSelect'
 import { fmtTime } from '@/lib/format'
 import { useAuthStore } from '@/store/authStore'
 
@@ -19,7 +19,7 @@ export function PromptsPage() {
   const [form] = Form.useForm<{
     name: string
     category: string
-    model_profile_version_id?: string
+    model_config_version_id: string
     temperature?: number
     top_p?: number
     max_output_tokens?: number
@@ -116,11 +116,11 @@ export function PromptsPage() {
             type="info"
             showIcon
             style={{ marginBottom: 12 }}
-            message="Model Profile Version 会固化到 Prompt v1"
-            description="留空时使用全局兼容配置；课堂全局配置默认指向火山方舟豆包。"
+            message="Model Config Version 会固化到 Prompt v1"
+            description="Prompt 版本、Agent 快照、会话与调用日志将共用这一个固定版本 ID。"
           />
-          <Form.Item name="model_profile_version_id" label="Model Profile Version">
-            <ModelProfileVersionSelect style={{ width: '100%' }} />
+          <Form.Item name="model_config_version_id" label="Model Config Version" rules={[{ required: true, message: '请选择模型配置版本' }]}>
+            <ModelConfigVersionSelect style={{ width: '100%' }} />
           </Form.Item>
           <Space wrap align="start">
             <Form.Item name="temperature" label="temperature">

@@ -11,8 +11,10 @@ import {
   SendOutlined,
   UserOutlined,
 } from '@ant-design/icons'
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
+import ReactMarkdown from 'react-markdown'
+import remarkGfm from 'remark-gfm'
 import {
   getConversation,
   getUserPromptInputSpec,
@@ -20,22 +22,15 @@ import {
   listConversations,
   streamChat,
   type AgentStreamEvent,
+  type ApprovalRequired,
   type ConversationDetail,
   type RunFinished,
   type RunStarted,
   type UserPromptSubmission,
 } from '@/api/agent'
 import { getObservability } from '@/api/observability'
-import { sendA2UIAction } from '@/api/a2ui'
-import { A2UIRenderer } from '@/components/A2UIRenderer'
-import {
-  applyA2UIMessage,
-  updateA2UISurfaceData,
-  type A2UIActionDefinition,
-  type A2UIMessage,
-  type A2UISurfaceModel,
-  type A2UISurfaces,
-} from '@/a2ui/protocol'
+import { resolveApproval, type ApprovalView } from '@/api/approval'
+import { ApprovalCard } from '@/components/ApprovalCard'
 import { useAuthStore } from '@/store/authStore'
 import './ConversationsPage.css'
 
@@ -46,13 +41,13 @@ interface TurnItem {
   content: string
 }
 
-interface SurfaceItem {
-  kind: 'surface'
+interface ApprovalItem {
+  kind: 'approval'
   id: string
-  surfaceId: string
+  approvalId: string
 }
 
-type ConversationItem = TurnItem | SurfaceItem
+type ConversationItem = TurnItem | ApprovalItem
 
 interface PromptSchemaProperty {
   type?: string
@@ -91,10 +86,6 @@ const promptFieldLabels: Record<string, string> = {
   constraints: '业务约束',
   task_type: '任务类型',
   primary_resource_id: '主资源标识',
-  claim_id: '理赔案件号',
-  review_goal: '审核目标',
-  operator_instruction: '操作员要求',
-  additional_context: '补充背景',
   analysis_goal: '分析目标',
   investigation_scope: '调查范围',
   execution_mode: '执行策略',
@@ -180,7 +171,6 @@ const eventColors: Record<string, string> = {
   tool_call: 'gold',
   tool_result: 'green',
   skill_trigger: 'purple',
-  await_approval: 'orange',
   'approval.approve': 'blue',
   'approval.reject': 'red',
   resume_completed: 'green',
@@ -198,9 +188,11 @@ export function ConversationsPage() {
   const [input, setInput] = useState('')
   const [items, setItems] = useState<ConversationItem[]>([])
   const [events, setEvents] = useState<RuntimeEvent[]>([])
-  const [surfaces, setSurfaces] = useState<A2UISurfaces>({})
+  const [approvals, setApprovals] = useState<Record<string, ApprovalView>>({})
   const [actionLoading, setActionLoading] = useState<string>()
   const [sending, setSending] = useState(false)
+  const pendingAnswerDelta = useRef<{ turnId: string; text: string }>()
+  const answerRenderFrame = useRef<number>()
 
   const { data: agents = [] } = useQuery({
     queryKey: ['agents', workspaceId],
@@ -233,9 +225,14 @@ export function ConversationsPage() {
     setInput('')
     setItems([])
     setEvents([])
-    setSurfaces({})
+    setApprovals({})
     setUserPromptVariables({})
   }, [workspaceId])
+  useEffect(() => () => {
+    if (answerRenderFrame.current !== undefined) {
+      window.cancelAnimationFrame(answerRenderFrame.current)
+    }
+  }, [])
   const promptFields = useMemo(
     () => Object.entries(userPromptSchema.properties),
     [userPromptSchema.properties],
@@ -248,28 +245,79 @@ export function ConversationsPage() {
     queryFn: getObservability,
   })
 
-  const traceURL = latestTraceId && observability?.langfuse_ui_url && observability.langfuse_project_id
-    ? `${observability.langfuse_ui_url.replace(/\/$/, '')}/project/${encodeURIComponent(observability.langfuse_project_id)}/traces/${latestTraceId}`
+  const langfuseURL = observability?.langfuse_ui_url && observability.langfuse_project_id && conversationId
+    ? latestTraceId
+      ? `${observability.langfuse_ui_url.replace(/\/$/, '')}/project/${encodeURIComponent(observability.langfuse_project_id)}/traces/${latestTraceId}`
+      : `${observability.langfuse_ui_url.replace(/\/$/, '')}/project/${encodeURIComponent(observability.langfuse_project_id)}/sessions/${encodeURIComponent(conversationId)}`
     : undefined
-  const activeApproval = Object.values(surfaces).find((surface) => {
-    const status = String(surface.dataModel.status ?? '')
-    return status === 'pending' || status === 'approved'
-  })
+  const activeApproval = Object.values(approvals).find((approval) => approval.status === 'pending' || approval.status === 'approved')
   const latestEvent = events[events.length - 1]
   const taskComposerVisible = !conversationId && !!userPromptSpecQ.data?.enabled
 
   function resetConversation() {
+    discardPendingAnswerDelta()
     setConversationId(undefined)
     setPinnedVersionId(undefined)
     setLatestTraceId(undefined)
     setItems([])
     setEvents([])
-    setSurfaces({})
+    setApprovals({})
     setUserPromptVariables(defaultVariables(userPromptSchema))
   }
 
   function addRuntimeEvent(type: string, label: string) {
     setEvents((current) => [...current, { id: `${Date.now()}-${current.length}`, type, label }])
+  }
+
+  // 模型可能按单字返回。把同一浏览器绘制帧内的片段合并后再更新状态，
+  // 既保留打字机效果，也避免每个字都重新解析整段 Markdown。
+  function commitAnswerDelta(turnId: string, delta: string) {
+    if (!delta) return
+    setItems((current) => {
+      const exists = current.some((item) => item.kind === 'turn' && item.id === turnId)
+      return exists
+        ? current.map((item) => item.kind === 'turn' && item.id === turnId
+          ? { ...item, content: item.content + delta }
+          : item)
+        : [...current, { kind: 'turn', id: turnId, role: 'assistant', content: delta }]
+    })
+  }
+
+  function flushPendingAnswerDelta() {
+    if (answerRenderFrame.current !== undefined) {
+      window.cancelAnimationFrame(answerRenderFrame.current)
+      answerRenderFrame.current = undefined
+    }
+    const pending = pendingAnswerDelta.current
+    pendingAnswerDelta.current = undefined
+    if (pending) commitAnswerDelta(pending.turnId, pending.text)
+  }
+
+  function discardPendingAnswerDelta() {
+    if (answerRenderFrame.current !== undefined) {
+      window.cancelAnimationFrame(answerRenderFrame.current)
+      answerRenderFrame.current = undefined
+    }
+    pendingAnswerDelta.current = undefined
+  }
+
+  function queueAnswerDelta(turnId: string, delta: string) {
+    if (!delta) return
+    const pending = pendingAnswerDelta.current
+    if (pending && pending.turnId !== turnId) flushPendingAnswerDelta()
+    if (pendingAnswerDelta.current) {
+      pendingAnswerDelta.current.text += delta
+    } else {
+      pendingAnswerDelta.current = { turnId, text: delta }
+    }
+    if (answerRenderFrame.current === undefined) {
+      answerRenderFrame.current = window.requestAnimationFrame(() => {
+        answerRenderFrame.current = undefined
+        const queued = pendingAnswerDelta.current
+        pendingAnswerDelta.current = undefined
+        if (queued) commitAnswerDelta(queued.turnId, queued.text)
+      })
+    }
   }
 
   function handleStreamEvent(event: AgentStreamEvent, assistantTurnId: string, userTurnId: string) {
@@ -288,14 +336,10 @@ export function ConversationsPage() {
         break
       }
       case 'answer_delta':
-        setItems((current) => {
-          const exists = current.some((item) => item.kind === 'turn' && item.id === assistantTurnId)
-          return exists
-            ? current.map((item) => item.kind === 'turn' && item.id === assistantTurnId
-              ? { ...item, content: item.content + (event.text ?? '') }
-              : item)
-            : [...current, { kind: 'turn', id: assistantTurnId, role: 'assistant', content: event.text ?? '' }]
-        })
+        queueAnswerDelta(assistantTurnId, event.text ?? '')
+        break
+      case 'answer_done':
+        flushPendingAnswerDelta()
         break
       case 'tool_call':
         addRuntimeEvent(event.type, `调用工具 ${event.text ?? ''}`)
@@ -306,23 +350,23 @@ export function ConversationsPage() {
       case 'skill_trigger':
         addRuntimeEvent(event.type, `触发技能 ${event.text ?? ''}`)
         break
-      case 'await_approval':
-        addRuntimeEvent(event.type, `等待审批 ${event.text?.slice(0, 8) ?? ''}`)
-        break
-      case 'a2ui': {
-        const a2uiMessage = event.data as A2UIMessage
-        setSurfaces((current) => applyA2UIMessage(current, a2uiMessage))
-        if (a2uiMessage.createSurface) {
-          const surfaceId = a2uiMessage.createSurface.surfaceId
-          setItems((current) => current.some((item) => item.kind === 'surface' && item.surfaceId === surfaceId)
-            ? current
-            : [...current, { kind: 'surface', id: `surface-${surfaceId}`, surfaceId }])
+      case 'approval_required': {
+        const required = event.data as ApprovalRequired
+        const approval: ApprovalView = {
+          id: required.approval_id, conversation_id: required.conversation_id,
+          tool_name: required.tool_name, arguments: required.arguments,
+          status: 'pending', presentation: required.presentation,
         }
+        setApprovals((current) => ({ ...current, [approval.id]: approval }))
+        setItems((current) => current.some((item) => item.kind === 'approval' && item.approvalId === approval.id)
+          ? current : [...current, { kind: 'approval', id: `approval-${approval.id}`, approvalId: approval.id }])
         break
       }
       case 'error':
+        flushPendingAnswerDelta()
         throw new Error(event.text || 'Agent 执行失败')
       case 'done': {
+        flushPendingAnswerDelta()
         const finished = event.data as RunFinished | undefined
         addRuntimeEvent(
           event.type,
@@ -387,27 +431,38 @@ export function ConversationsPage() {
   async function restoreConversation(id: string) {
     try {
       const detail = await getConversation(id)
+      const restoredApprovals = Object.fromEntries((detail.approvals ?? []).map((item) => [item.id, item]))
+      const restoredApprovalItems = (detail.approvals ?? []).map((item) => ({
+        timestamp: item.created_at ?? '',
+        item: { kind: 'approval' as const, id: `approval-${item.id}`, approvalId: item.id },
+      }))
+      const restoredTurnItems = detail.messages
+        .filter((item) => item.role === 'user' || item.role === 'assistant')
+        .map((item, index) => ({
+          timestamp: item.created_at ?? '',
+          item: {
+            kind: 'turn' as const,
+            id: item.id ?? `history-${index}`,
+            role: item.role as 'user' | 'assistant',
+            content: item.content,
+          },
+        }))
       setAgentId(detail.conversation.agent_id)
       setConversationId(detail.conversation.id)
       setPinnedVersionId(detail.conversation.agent_version_id)
-      setLatestTraceId(undefined)
+      setLatestTraceId(detail.trace_id || undefined)
       setEvents([])
-      setSurfaces({})
-      setItems(detail.messages
-        .filter((item) => item.role === 'user' || item.role === 'assistant')
-        .map((item, index) => ({
-          kind: 'turn' as const,
-          id: item.id ?? `history-${index}`,
-          role: item.role as 'user' | 'assistant',
-          content: item.content,
-        })))
+      setApprovals(restoredApprovals)
+      setItems([...restoredTurnItems, ...restoredApprovalItems]
+        .sort((left, right) => Date.parse(left.timestamp) - Date.parse(right.timestamp))
+        .map(({ item }) => item))
       message.success('已恢复历史会话，可继续多轮对话')
     } catch (error) {
       message.error(error instanceof Error ? error.message : '读取历史会话失败')
     }
   }
 
-  async function waitForResume(id: string, before: ConversationDetail, surfaceId: string) {
+  async function waitForResume(id: string, before: ConversationDetail, approvalId: string) {
     const knownMessageIDs = new Set(before.messages.map((item) => item.id).filter(Boolean))
     for (let attempt = 0; attempt < 45; attempt += 1) {
       const detail = await getConversation(id)
@@ -420,11 +475,7 @@ export function ConversationsPage() {
           setItems((current) => current.some((item) => item.id === itemId) ? current : [...current, {
             kind: 'turn', id: itemId, role: 'assistant', content: assistant.content,
           }])
-          setSurfaces((current) => updateA2UISurfaceData(current, surfaceId, {
-            status: 'completed',
-            status_label: '操作执行完成',
-            result_label: 'Agent 已完成业务操作并返回最终结果',
-          }))
+          setApprovals((current) => ({ ...current, [approvalId]: { ...current[approvalId], status: 'completed' } }))
           addRuntimeEvent('resume_completed', '审批续跑完成')
           return
         }
@@ -434,21 +485,18 @@ export function ConversationsPage() {
     throw new Error('审批已提交，等待 Agent 续跑超时')
   }
 
-  async function handleA2UIAction(
-    surface: A2UISurfaceModel,
-    componentId: string,
-    action: NonNullable<A2UIActionDefinition['event']>,
-  ) {
+  async function handleApproval(approval: ApprovalView, decision: 'approve' | 'reject') {
     if (!conversationId) return
-    setActionLoading(surface.surfaceId)
+    setActionLoading(approval.id)
     try {
-      const before = action.name === 'approval.approve' ? await getConversation(conversationId) : undefined
-      const responses = await sendA2UIAction(conversationId, surface, componentId, action)
-      setSurfaces((current) => responses.reduce(applyA2UIMessage, current))
-      addRuntimeEvent(action.name, action.name === 'approval.approve' ? '审批已批准' : '审批已拒绝')
-      if (action.name === 'approval.approve' && before) await waitForResume(conversationId, before, surface.surfaceId)
+      const before = decision === 'approve' ? await getConversation(conversationId) : undefined
+      await resolveApproval(approval.id, decision)
+      const status = decision === 'approve' ? 'approved' : 'rejected'
+      setApprovals((current) => ({ ...current, [approval.id]: { ...current[approval.id], status } }))
+      addRuntimeEvent(`approval.${decision}`, decision === 'approve' ? '审批已批准' : '审批已拒绝')
+      if (decision === 'approve' && before) await waitForResume(conversationId, before, approval.id)
     } catch (error) {
-      message.error(error instanceof Error ? error.message : 'A2UI 动作执行失败')
+      message.error(error instanceof Error ? error.message : '审批操作失败')
     } finally {
       setActionLoading(undefined)
     }
@@ -459,7 +507,7 @@ export function ConversationsPage() {
   }
 
   return (
-    <div className="conversation-page-layout">
+    <div className={`conversation-page-layout${!taskComposerVisible ? ' is-transcript' : ''}`}>
       <aside className="conversation-history-panel">
         <header className="conversation-history-header">
           <div>
@@ -536,7 +584,7 @@ export function ConversationsPage() {
       </aside>
 
       <main className="conversation-main-panel">
-      <Space style={{ marginBottom: 16 }} wrap>
+      <Space className="conversation-toolbar" wrap>
         <Typography.Text strong>会话 Playground</Typography.Text>
         <Tag>Admin 内部演示</Tag>
         <Select
@@ -556,17 +604,18 @@ export function ConversationsPage() {
         <Button onClick={resetConversation} disabled={items.length === 0}>新会话</Button>
         {conversationId && <Tag color="blue">Conversation {conversationId.slice(0, 8)}</Tag>}
         {pinnedVersionId && <Tag color="purple">Agent Version {pinnedVersionId.slice(0, 8)}</Tag>}
-        {latestTraceId && (
-          traceURL
-            ? <Button type="link" href={traceURL} target="_blank" icon={<LinkOutlined />}>Langfuse Trace {latestTraceId.slice(0, 8)}</Button>
-            : <Tag>Trace {latestTraceId.slice(0, 8)}</Tag>
+        {langfuseURL && (
+          <Button type="link" href={langfuseURL} target="_blank" icon={<LinkOutlined />}>
+            {latestTraceId ? `Langfuse Trace ${latestTraceId.slice(0, 8)}` : `Langfuse Session ${conversationId?.slice(0, 8)}`}
+          </Button>
         )}
+        {latestTraceId && !langfuseURL && <Tag>Trace {latestTraceId.slice(0, 8)}</Tag>}
       </Space>
 
       <Alert
+        className="conversation-context-alert"
         type="info"
         showIcon
-        style={{ marginBottom: 12 }}
         message="这里用于演示 Agent 运行、人工审批和 Langfuse 链路；C 端页面通常只保留聊天与业务状态。"
       />
 
@@ -715,7 +764,7 @@ export function ConversationsPage() {
       )}
 
       {(!taskComposerVisible || items.length > 0) && <Card
-        style={{ minHeight: 420, marginBottom: 12 }}
+        className="conversation-transcript-card"
         extra={latestEvent && (
           <Space size={4}>
             <Tag color={eventColors[latestEvent.type]}>{latestEvent.label}</Tag>
@@ -745,26 +794,33 @@ export function ConversationsPage() {
                       {item.role === 'assistant' && <Avatar icon={<RobotOutlined />} style={{ background: '#1677ff' }} />}
                       <div style={{
                         background: item.role === 'user' ? '#e6f4ff' : '#f5f5f5',
-                        padding: '10px 14px', borderRadius: 10, whiteSpace: 'pre-wrap', lineHeight: 1.7,
+                        padding: '10px 14px', borderRadius: 10, lineHeight: 1.7,
+                        whiteSpace: item.role === 'user' ? 'pre-wrap' : 'normal',
                       }}>
-                        {item.content || '…'}
+                        {item.role === 'assistant' ? (
+                          item.content ? (
+                            <div className="chat-md">
+                              <ReactMarkdown remarkPlugins={[remarkGfm]}>{item.content}</ReactMarkdown>
+                            </div>
+                          ) : (
+                            '…'
+                          )
+                        ) : (
+                          item.content || '…'
+                        )}
                       </div>
                       {item.role === 'user' && <Avatar icon={<UserOutlined />} />}
                     </Space>
                   </div>
                 )
               }
-              const surface = surfaces[item.surfaceId]
-              if (!surface) return null
+              const approval = approvals[item.approvalId]
+              if (!approval) return null
               return (
                 <div key={item.id} style={{ display: 'flex', alignItems: 'flex-start', gap: 12 }}>
                   <Avatar icon={<RobotOutlined />} style={{ flex: '0 0 auto', background: '#1677ff' }} />
                   <div style={{ width: 'min(520px, calc(100% - 52px))' }}>
-                    <A2UIRenderer
-                      surface={surface}
-                      loading={actionLoading === surface.surfaceId}
-                      onAction={(componentId, action) => handleA2UIAction(surface, componentId, action)}
-                    />
+                    <ApprovalCard approval={approval} loading={actionLoading === approval.id} onDecision={(decision) => handleApproval(approval, decision)} />
                   </div>
                 </div>
               )
@@ -773,7 +829,7 @@ export function ConversationsPage() {
         )}
       </Card>}
 
-      {!taskComposerVisible && <Space.Compact style={{ width: '100%' }}>
+      {!taskComposerVisible && <Space.Compact className="conversation-input-bar">
         <Input
           value={input}
           onChange={(event) => setInput(event.target.value)}

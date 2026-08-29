@@ -64,7 +64,7 @@ export function ToolDetailPage() {
     versionForm.setFieldsValue({
       schema_json: latest?.schema_json ?? '{}',
       endpoint_config: latest?.endpoint_config ?? '{}',
-      auth_config: latest?.auth_config ?? '{}',
+      auth_config: '',
       retry_policy: latest?.retry_policy ?? '{"max_attempts":3,"backoff_ms":1000}',
     })
     setVersionOpen(true)
@@ -99,7 +99,7 @@ export function ToolDetailPage() {
           style={{ marginBottom: 12 }}
           type="info"
           showIcon
-          message="新版本创建后自动成为 Sandbox 的试调目标；发布门禁只认该版本自己的成功试调记录。"
+          message="新版本创建后自动成为试调目标；发布门禁只认该版本自己的成功试调记录。"
         />
         <Table
           rowKey="id"
@@ -130,7 +130,7 @@ export function ToolDetailPage() {
         />
       </Card>
 
-      <Card title="Sandbox 测试场">
+      <Card title="工具试调">
         <Alert
           style={{ marginBottom: 12 }}
           type="info"

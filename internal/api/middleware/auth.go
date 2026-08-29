@@ -1,3 +1,4 @@
+// Package middleware 提供HTTP中间件
 package middleware
 
 import (
@@ -8,76 +9,100 @@ import (
 	"github.com/HaojunMiao/ecommerce-ops-agent/internal/platform/iam"
 )
 
-type userIDKey struct{}
-type workspaceIDKey struct{}
-type workspaceRoleKey struct{}
+// ContextKey 定义context key类型
+type ContextKey string
 
-// 读取 Authorization: Bearer <token>，解析 JWT，将 userID 写入请求上下文。
-func Auth(service *iam.Service) Func {
+const (
+	ContextKeyUserID        ContextKey = "user_id"
+	ContextKeyWorkspaceID   ContextKey = "workspace_id"
+	ContextKeyGlobalRole    ContextKey = "global_role"
+	ContextKeyWorkspaceRole ContextKey = "workspace_role"
+)
+
+// Auth JWT认证中间件
+func Auth(iamService *iam.Service) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			raw := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
-			if raw == "" {
-				http.Error(w, "unauthorized", http.StatusUnauthorized)
+			authHeader := r.Header.Get("Authorization")
+			if authHeader == "" {
+				http.Error(w, "missing authorization header", http.StatusUnauthorized)
 				return
 			}
-			userID, err := service.ParseToken(raw)
+
+			// 提取Bearer token
+			const bearerPrefix = "Bearer "
+			if !strings.HasPrefix(authHeader, bearerPrefix) {
+				http.Error(w, "invalid authorization format", http.StatusUnauthorized)
+				return
+			}
+
+			tokenString := authHeader[len(bearerPrefix):]
+			claims, err := iamService.ValidateToken(tokenString)
 			if err != nil {
-				http.Error(w, "unauthorized", http.StatusUnauthorized)
+				http.Error(w, "invalid token", http.StatusUnauthorized)
 				return
 			}
-			ctx := context.WithValue(r.Context(), userIDKey{}, userID)
+			user, err := iamService.GetUser(r.Context(), claims.UserID)
+			if err != nil || user.Status != "active" {
+				http.Error(w, "user account is unavailable", http.StatusUnauthorized)
+				return
+			}
+
+			ctx := context.WithValue(r.Context(), ContextKeyUserID, claims.UserID)
+			ctx = context.WithValue(ctx, ContextKeyGlobalRole, user.Role)
 			next.ServeHTTP(w, r.WithContext(ctx))
 		})
 	}
 }
 
-// Workspace：读取 X-Workspace-ID，查询用户的真实成员角色并检查操作权限。
-func Workspace(service *iam.Service) Func {
+// Workspace 工作空间中间件
+func Workspace(iamService *iam.Service) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			workspaceID := strings.TrimSpace(r.Header.Get("X-Workspace-ID"))
+			// 从header、query或path中提取workspace_id
+			workspaceID := r.Header.Get("X-Workspace-ID")
 			if workspaceID == "" {
-				http.Error(w, "workspace is required", http.StatusBadRequest)
+				workspaceID = r.URL.Query().Get("workspace_id")
+			}
+
+			if workspaceID == "" {
+				if workspaceOptionalPath(r.URL.Path) {
+					next.ServeHTTP(w, r)
+					return
+				}
+				http.Error(w, "workspace id is required", http.StatusBadRequest)
 				return
 			}
-			if service == nil {
+			userID := GetUserIDFromContext(r.Context())
+			role, err := iamService.WorkspaceRole(r.Context(), userID, workspaceID)
+			if err != nil {
 				http.Error(w, "workspace access denied", http.StatusForbidden)
 				return
 			}
-			role, err := service.WorkspaceRole(r.Context(), UserID(r.Context()), workspaceID)
-			if err != nil || !workspaceMethodAllowed(role, r.Method, r.URL.Path) {
-				http.Error(w, "workspace access denied", http.StatusForbidden)
+			if !workspaceMethodAllowed(role, r.Method, r.URL.Path) {
+				http.Error(w, "workspace role does not allow this action", http.StatusForbidden)
 				return
 			}
-			ctx := context.WithValue(r.Context(), workspaceIDKey{}, workspaceID)
-			ctx = context.WithValue(ctx, workspaceRoleKey{}, role)
-			next.ServeHTTP(w, r.WithContext(ctx))
+			ctx := context.WithValue(r.Context(), ContextKeyWorkspaceID, workspaceID)
+			ctx = context.WithValue(ctx, ContextKeyWorkspaceRole, role)
+			r = r.WithContext(ctx)
+
+			next.ServeHTTP(w, r)
 		})
 	}
 }
 
-// UserID、WorkspaceID、WorkspaceRole：从 context 读取中间件写入的信息。
-func UserID(ctx context.Context) string {
-	value, _ := ctx.Value(userIDKey{}).(string)
-	return value
+func workspaceOptionalPath(path string) bool {
+	switch path {
+	case "/api/v1/auth/register", "/api/v1/users", "/api/v1/workspaces", "/api/v1/me", "/api/v1/observability":
+		return true
+	default:
+		return strings.HasPrefix(path, "/api/v1/workspaces/")
+	}
 }
 
-func WorkspaceID(ctx context.Context) string {
-	value, _ := ctx.Value(workspaceIDKey{}).(string)
-	return value
-}
-
-func WorkspaceRole(ctx context.Context) string {
-	value, _ := ctx.Value(workspaceRoleKey{}).(string)
-	return value
-}
-
-// workspaceMethodAllow viewer 只读，member 可运行已发布能力，
-// editor 可修改控制面，审批动作只允许 owner/admin。
 func workspaceMethodAllowed(role, method, path string) bool {
-	if method != http.MethodGet && method != http.MethodHead &&
-		(strings.Contains(path, "/approvals/") || strings.HasSuffix(path, "/a2ui/actions")) {
+	if method != http.MethodGet && strings.Contains(path, "/approvals/") {
 		return role == iam.WorkspaceRoleOwner || role == iam.WorkspaceRoleAdmin
 	}
 	if role == iam.WorkspaceRoleOwner || role == iam.WorkspaceRoleAdmin || role == iam.WorkspaceRoleEditor {
@@ -89,8 +114,43 @@ func workspaceMethodAllowed(role, method, path string) bool {
 	if role == iam.WorkspaceRoleViewer {
 		return false
 	}
+	// member 可以运行已发布能力，但不能修改控制面配置。
 	return strings.HasSuffix(path, "/chat") ||
 		strings.HasSuffix(path, "/search") ||
 		strings.HasSuffix(path, "/runs") ||
 		strings.Contains(path, "/stream/")
+}
+
+// RequireGlobalAdmin 限制平台级用户管理接口。
+func RequireGlobalAdmin() func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if role, _ := r.Context().Value(ContextKeyGlobalRole).(string); role != iam.GlobalRoleAdmin {
+				http.Error(w, "global admin role required", http.StatusForbidden)
+				return
+			}
+			next.ServeHTTP(w, r)
+		})
+	}
+}
+
+// GetUserIDFromContext 从context获取用户ID
+func GetUserIDFromContext(ctx context.Context) string {
+	if userID, ok := ctx.Value(ContextKeyUserID).(string); ok {
+		return userID
+	}
+	return ""
+}
+
+// GetWorkspaceIDFromContext 从context获取工作空间ID
+func GetWorkspaceIDFromContext(ctx context.Context) string {
+	if workspaceID, ok := ctx.Value(ContextKeyWorkspaceID).(string); ok {
+		return workspaceID
+	}
+	return ""
+}
+
+func GetGlobalRoleFromContext(ctx context.Context) string {
+	role, _ := ctx.Value(ContextKeyGlobalRole).(string)
+	return role
 }

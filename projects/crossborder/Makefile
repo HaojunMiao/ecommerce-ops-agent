@@ -1,8 +1,7 @@
 .PHONY: build test run
 
 build:
-	@mkdir -p bin
-	go build -o bin/simulator ./cmd/simulator
+	go build ./...
 
 test:
 	go test -race -count=1 ./...

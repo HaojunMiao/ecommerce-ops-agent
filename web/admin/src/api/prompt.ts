@@ -11,7 +11,7 @@ export interface CreatePromptRequest {
   category: string
   template: string
   variables_schema: string
-  model_profile_version_id?: string
+  model_config_version_id: string
   generation_config?: {
     temperature?: number
     top_p?: number
@@ -33,36 +33,16 @@ export async function createVersion(
   promptId: string,
   template: string,
   variablesSchema: string,
-  modelProfileVersionId?: string,
+  modelConfigVersionId: string,
   generationConfig?: Record<string, unknown>,
 ): Promise<PromptVersion> {
   const { data } = await api.post<PromptVersion>(`/prompts/${promptId}/versions`, {
     template,
     variables_schema: variablesSchema,
-    model_profile_version_id: modelProfileVersionId,
+    model_config_version_id: modelConfigVersionId,
     generation_config: generationConfig ?? {},
   })
   return data
-}
-
-export async function startRollout(
-  promptId: string, env: string, candidateVersionId: string, trafficPercent: number,
-): Promise<void> {
-  await api.post(`/prompts/${promptId}/rollouts`, {
-    env, candidate_version_id: candidateVersionId, traffic_percent: trafficPercent,
-  })
-}
-
-export async function updateRolloutTraffic(promptId: string, env: string, trafficPercent: number): Promise<void> {
-  await api.put(`/prompts/${promptId}/rollouts/traffic`, { env, traffic_percent: trafficPercent })
-}
-
-export async function completeRollout(promptId: string, env: string): Promise<void> {
-  await api.post(`/prompts/${promptId}/rollouts/complete`, { env })
-}
-
-export async function rollbackRollout(promptId: string, env: string): Promise<void> {
-  await api.post(`/prompts/${promptId}/rollouts/rollback`, { env })
 }
 
 // 晋升 / 回滚:改 env 指针(dev/staging/prod)。

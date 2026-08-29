@@ -47,7 +47,7 @@ export function LoginPage() {
       <Card style={{ width: 360 }}>
         <div style={{ textAlign: 'center', marginBottom: 24 }}>
           <Typography.Title level={3} style={{ margin: 0 }}>
-            kbot Admin
+            电商运营 Agent 管理台
           </Typography.Title>
           <Typography.Text type="secondary">企业级 AI Agent 平台</Typography.Text>
         </div>

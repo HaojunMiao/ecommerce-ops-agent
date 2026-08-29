@@ -1,11 +1,9 @@
 package main
 
 import (
-	"errors"
 	"log"
 	"net/http"
 	"os"
-	"time"
 
 	"github.com/HaojunMiao/ecommerce-ops-agent/projects/crossborder/internal/httpapi"
 	"github.com/HaojunMiao/ecommerce-ops-agent/projects/crossborder/internal/service"
@@ -16,13 +14,8 @@ func main() {
 	if addr == "" {
 		addr = ":8091"
 	}
-	server := &http.Server{
-		Addr:              addr,
-		Handler:           httpapi.New(service.NewSeeded()),
-		ReadHeaderTimeout: 5 * time.Second,
-	}
 	log.Printf("crossborder simulator listening on %s", addr)
-	if err := server.ListenAndServe(); !errors.Is(err, http.ErrServerClosed) {
+	if err := http.ListenAndServe(addr, httpapi.New(service.NewSeeded())); err != nil {
 		log.Fatal(err)
 	}
 }

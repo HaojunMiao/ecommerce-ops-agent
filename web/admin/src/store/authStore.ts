@@ -29,6 +29,6 @@ export const useAuthStore = create<AuthState>()(
       setWorkspace: (workspaceId) => set({ workspaceId }),
       logout: () => set({ token: null, user: null, workspaceId: null }),
     }),
-    { name: 'kbot-auth' },
+    { name: 'ecommerce-ops-auth' },
   ),
 )

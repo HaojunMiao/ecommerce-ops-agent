@@ -1,92 +1,130 @@
-// Package markdown_folder 从本地 Markdown 目录读取课堂知识库。
+// Package markdown_folder 是 reference Connector：监听本地 Markdown 文件夹。
+//
+// 简单可控。
 package markdown_folder
 
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
-	"sort"
 	"strings"
 
 	"github.com/HaojunMiao/ecommerce-ops-agent/internal/connector"
 )
 
-// Connector 从 Root 开始递归扫描本地 Markdown 文件。
-type Connector struct{ Root string }
+// Connector 监听一个本地文件夹下的所有 .md 文件。
+type Connector struct {
+	rootPath string
+}
 
-func New(root string) *Connector { return &Connector{Root: root} }
+// New 创建一个 markdown_folder connector。
+func New(rootPath string) *Connector {
+	return &Connector{rootPath: rootPath}
+}
 
-// Scan 将目录中的每个 .md 文件转换成一个标准 Document。
-// 它只负责读取和标准化文档，不负责切片与建立检索索引。
-func (c *Connector) Scan(ctx context.Context) ([]connector.Document, error) {
-	root, err := filepath.Abs(c.Root)
+func (c *Connector) Name() string { return "markdown_folder" }
+
+// OwnsSource 判断历史文档 URI 是否属于当前目录。源文件可能已经删除，因此这里只做
+// 规范化路径包含关系，不对 sourceURI 调用 EvalSymlinks。
+func (c *Connector) OwnsSource(sourceURI string) bool {
+	root, err := filepath.Abs(c.rootPath)
 	if err != nil {
-		return nil, fmt.Errorf("resolve root: %w", err)
+		return false
 	}
+	if real, evalErr := filepath.EvalSymlinks(root); evalErr == nil {
+		root = real
+	}
+	source, err := filepath.Abs(sourceURI)
+	if err != nil {
+		return false
+	}
+	// 文件本身可能已经不存在，但父目录仍可解析（macOS /var → /private/var
+	// 这类系统级符号链接也需要与 root 使用同一种规范化方式）。
+	if realParent, evalErr := filepath.EvalSymlinks(filepath.Dir(source)); evalErr == nil {
+		source = filepath.Join(realParent, filepath.Base(source))
+	}
+	rel, err := filepath.Rel(filepath.Clean(root), filepath.Clean(source))
+	return err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) && !filepath.IsAbs(rel)
+}
 
-	var documents []connector.Document
-	err = filepath.WalkDir(root, func(path string, entry fs.DirEntry, walkErr error) error {
-		if walkErr != nil {
-			return walkErr
-		}
-		// 目录较大时允许上游通过 context 及时取消扫描。
+// ListDocuments 遍历根目录下所有 .md 文件。文件夹通常不大，一次 list 全量返回，
+// 不用游标分页（cursor 始终返回空）。
+func (c *Connector) ListDocuments(ctx context.Context, cursor string) ([]connector.DocMeta, string, error) {
+	var docs []connector.DocMeta
+	err := filepath.WalkDir(c.rootPath, func(path string, d fs.DirEntry, err error) error {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		// 不跟随符号链接，避免扫描范围逃逸到 Root 之外。
-		if entry.Type()&os.ModeSymlink != 0 {
-			return nil
-		}
-		if entry.IsDir() || strings.ToLower(filepath.Ext(entry.Name())) != ".md" {
-			return nil
-		}
-
-		content, err := os.ReadFile(path)
-		if err != nil {
-			return fmt.Errorf("read %s: %w", path, err)
-		}
-		relative, err := filepath.Rel(root, path)
 		if err != nil {
 			return err
 		}
-		sum := sha256.Sum256(content)
-		documents = append(documents, connector.Document{
-			// 保存相对路径而不是机器上的绝对路径，使来源标识更稳定、可迁移。
-			SourceURI: filepath.ToSlash(relative),
-			Title:     titleOf(entry.Name(), string(content)),
-			Content:   string(content),
-			Checksum:  fmt.Sprintf("%x", sum),
+		if d.IsDir() || d.Type()&os.ModeSymlink != 0 || !strings.HasSuffix(strings.ToLower(d.Name()), ".md") {
+			return nil
+		}
+		info, err := d.Info()
+		if err != nil {
+			return err
+		}
+		h, err := fileHash(path)
+		if err != nil {
+			return err
+		}
+		docs = append(docs, connector.DocMeta{
+			ID:        path,
+			Title:     filepath.Base(path),
+			UpdatedAt: info.ModTime(),
+			Hash:      h,
 		})
 		return nil
 	})
 	if err != nil {
-		return nil, fmt.Errorf("scan markdown folder: %w", err)
+		return nil, "", fmt.Errorf("walk markdown folder: %w", err)
 	}
-
-	// 文件系统遍历顺序不应成为接口行为的一部分，显式排序保证结果稳定。
-	sort.Slice(documents, func(i, j int) bool {
-		return documents[i].SourceURI < documents[j].SourceURI
-	})
-	return documents, nil
+	return docs, "", nil
 }
 
-// titleOf 只把第一个一级标题作为文档标题；它不会按标题拆分文档。
-// 没有一级标题时退化为不带扩展名的文件名。
-func titleOf(filename, content string) string {
-	for _, line := range strings.Split(content, "\n") {
-		line = strings.TrimSpace(line)
-		if !strings.HasPrefix(line, "# ") {
-			continue
-		}
-		if title := strings.TrimSpace(strings.TrimPrefix(line, "# ")); title != "" {
-			return title
-		}
+// FetchDocument 打开一份文档供读取。docID 即文件路径。
+func (c *Connector) FetchDocument(ctx context.Context, docID string) (io.ReadCloser, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
 	}
-	return strings.TrimSuffix(filename, filepath.Ext(filename))
+	abs, err := filepath.Abs(docID)
+	if err != nil {
+		return nil, err
+	}
+	root, err := filepath.Abs(c.rootPath)
+	if err != nil {
+		return nil, err
+	}
+	root, err = filepath.EvalSymlinks(root)
+	if err != nil {
+		return nil, err
+	}
+	abs, err = filepath.EvalSymlinks(abs)
+	if err != nil {
+		return nil, err
+	}
+	rel, err := filepath.Rel(root, abs)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || filepath.IsAbs(rel) {
+		return nil, fmt.Errorf("document %q outside connector root", docID)
+	}
+	return os.Open(abs)
 }
 
-// 编译期确认本实现满足统一知识源接口。
-var _ connector.Connector = (*Connector)(nil)
+func fileHash(path string) (string, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return "", err
+	}
+	defer f.Close()
+	h := sha256.New()
+	if _, err := io.Copy(h, f); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(h.Sum(nil)), nil
+}

@@ -8,11 +8,10 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import ReactDiffViewerImport, { type ReactDiffViewerProps } from 'react-diff-viewer-continued'
 import {
   listPrompts, listVersions, createVersion, promote, render as renderPrompt,
-  startRollout, updateRolloutTraffic, completeRollout, rollbackRollout,
 } from '@/api/prompt'
 import type { PromptVersion } from '@/api/types'
 import { CodeEditor } from '@/components/CodeEditor'
-import { ModelProfileVersionSelect } from '@/components/ModelProfileVersionSelect'
+import { ModelConfigVersionSelect } from '@/components/ModelConfigVersionSelect'
 import { fmtTime } from '@/lib/format'
 
 const ENVS = ['dev', 'staging', 'prod']
@@ -81,7 +80,6 @@ export function PromptDetailPage() {
           { key: 'versions', label: `Versions (${versions.length})`, children: <VersionsTab promptId={id} versions={versions} /> },
           { key: 'diff', label: 'Diff', children: <DiffTab versions={versions} /> },
           { key: 'render', label: 'Render', children: <RenderTab promptId={id} /> },
-          { key: 'rollout', label: 'Rollout', children: <RolloutTab promptId={id} versions={versions} /> },
         ]}
       />
     </div>
@@ -92,12 +90,12 @@ export function PromptDetailPage() {
 function EditorTab({ promptId, latest, onSaved }: { promptId: string; latest?: PromptVersion; onSaved: () => void }) {
   const [template, setTemplate] = useState(latest?.template ?? '')
   const [schema, setSchema] = useState(latest?.variables_schema ?? '{}')
-  const [modelProfileVersionId, setModelProfileVersionId] = useState(latest?.model_profile_version_id)
+  const [modelConfigVersionId, setModelConfigVersionId] = useState(latest?.model_config_version_id)
   const [temperature, setTemperature] = useState<number | null>(latest?.generation_config?.temperature ?? null)
   const [topP, setTopP] = useState<number | null>(latest?.generation_config?.top_p ?? null)
   const [maxTokens, setMaxTokens] = useState<number | null>(latest?.generation_config?.max_output_tokens ?? null)
   const save = useMutation({
-    mutationFn: () => createVersion(promptId, template, schema, modelProfileVersionId, {
+    mutationFn: () => createVersion(promptId, template, schema, modelConfigVersionId ?? '', {
       ...(temperature == null ? {} : { temperature }),
       ...(topP == null ? {} : { top_p: topP }),
       ...(maxTokens == null ? {} : { max_output_tokens: maxTokens }),
@@ -115,7 +113,7 @@ function EditorTab({ promptId, latest, onSaved }: { promptId: string; latest?: P
         <Typography.Text type="secondary">
           当前最新:{latest ? `v${latest.version} · token≈${latest.token_estimate} · ${latest.hash.slice(0, 8)}` : '无版本'}
         </Typography.Text>
-        <Button type="primary" icon={<SaveOutlined />} loading={save.isPending} onClick={() => save.mutate()}>
+        <Button type="primary" icon={<SaveOutlined />} loading={save.isPending} disabled={!modelConfigVersionId} onClick={() => save.mutate()}>
           保存为新版本
         </Button>
       </Space>
@@ -126,22 +124,12 @@ function EditorTab({ promptId, latest, onSaved }: { promptId: string; latest?: P
       </Typography.Text>
       <CodeEditor value={schema} onChange={setSchema} language="json" height={140} />
       <Typography.Title level={5} style={{ marginTop: 18 }}>模型与生成参数</Typography.Title>
-      {!modelProfileVersionId && (
-        <Alert
-          type="warning"
-          showIcon
-          style={{ marginBottom: 12 }}
-          message="当前版本会使用全局兼容配置"
-          description="全局配置默认指向火山方舟豆包；如需切换模型，请选择 Model Profile Version 后保存为新版本。"
-        />
-      )}
       <Space wrap>
-        <ModelProfileVersionSelect
-          allowClear
-          placeholder="Model Profile Version（空则使用全局兼容配置）"
+        <ModelConfigVersionSelect
+          placeholder="选择 Model Config Version"
           style={{ width: 360 }}
-          value={modelProfileVersionId}
-          onChange={setModelProfileVersionId}
+          value={modelConfigVersionId}
+          onChange={setModelConfigVersionId}
         />
         <InputNumber placeholder="temperature" min={0} max={2} step={0.1} value={temperature} onChange={setTemperature} />
         <InputNumber placeholder="top_p" min={0} max={1} step={0.1} value={topP} onChange={setTopP} />
@@ -173,7 +161,7 @@ function VersionsTab({ promptId, versions }: { promptId: string; versions: Promp
           { title: '版本', dataIndex: 'version', render: (v: number) => <Tag color="blue">v{v}</Tag> },
           { title: 'Hash', dataIndex: 'hash', render: (v: string) => <code>{v?.slice(0, 12)}</code> },
           { title: 'Token 估算', dataIndex: 'token_estimate' },
-          { title: 'Model Profile', dataIndex: 'model_profile_version_id', render: (v: string) => v ? <code>{v.slice(0, 8)}</code> : '全局回退' },
+          { title: 'Model Config', dataIndex: 'model_config_version_id', render: (v: string) => v ? <code>{v.slice(0, 8)}</code> : <Tag color="red">无效历史版本</Tag> },
           { title: '创建时间', dataIndex: 'created_at', render: fmtTime },
           {
             title: '晋升',
@@ -206,48 +194,6 @@ function VersionsTab({ promptId, versions }: { promptId: string; versions: Promp
         )}
       </Modal>
     </>
-  )
-}
-
-function RolloutTab({ promptId, versions }: { promptId: string; versions: PromptVersion[] }) {
-  const [env, setEnv] = useState('prod')
-  const [candidate, setCandidate] = useState(versions[0]?.id)
-  const [traffic, setTraffic] = useState(5)
-  const action = useMutation({
-    mutationFn: async (kind: 'start' | 'update' | 'complete' | 'rollback') => {
-      if (kind === 'start') return startRollout(promptId, env, candidate!, traffic)
-      if (kind === 'update') return updateRolloutTraffic(promptId, env, traffic)
-      if (kind === 'complete') return completeRollout(promptId, env)
-      return rollbackRollout(promptId, env)
-    },
-    onSuccess: (_, kind) => message.success(
-      kind === 'complete' ? '候选版本已成为新基线' : kind === 'rollback' ? '灰度已回滚' : '灰度配置已更新',
-    ),
-    onError: (e: Error) => message.error(e.message),
-  })
-  return (
-    <Card>
-      <Alert
-        type="info"
-        showIcon
-        style={{ marginBottom: 16 }}
-        message="未命中灰度流量的用户继续使用环境基线；同一用户按实验 ID 确定性分桶。"
-      />
-      <Space wrap>
-        <Select value={env} onChange={setEnv} options={ENVS.map((v) => ({ value: v, label: v }))} />
-        <Select
-          value={candidate}
-          onChange={setCandidate}
-          style={{ width: 160 }}
-          options={versions.map((v) => ({ value: v.id, label: `候选 v${v.version}` }))}
-        />
-        <InputNumber min={1} max={99} value={traffic} onChange={(v) => setTraffic(v ?? 5)} addonAfter="%" />
-        <Button type="primary" loading={action.isPending} onClick={() => action.mutate('start')}>开始灰度</Button>
-        <Button onClick={() => action.mutate('update')}>调整流量</Button>
-        <Button type="primary" onClick={() => action.mutate('complete')}>转全并成为基线</Button>
-        <Button danger onClick={() => action.mutate('rollback')}>回滚</Button>
-      </Space>
-    </Card>
   )
 }
 

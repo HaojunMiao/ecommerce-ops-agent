@@ -8,15 +8,11 @@ import { CodeEditor } from '@/components/CodeEditor'
 import { fmtTime } from '@/lib/format'
 import { useAuthStore } from '@/store/authStore'
 
-const SOURCE_TYPES = ['rest_api', 'mcp_server', 'internal_sdk', 'code_execution', 'a2a']
+const SOURCE_TYPES = ['rest_api', 'internal_sdk']
 const DEFAULT_SCHEMA = '{\n  "type": "object",\n  "properties": {\n    "order_id": { "type": "string" }\n  },\n  "required": ["order_id"]\n}'
 const ENDPOINT_TEMPLATES: Record<string, string> = {
   rest_api: '{\n  "url": "https://api.example.com/refund",\n  "method": "POST"\n}',
-  mcp_server:
-    '{\n  "transport": "streamable_http",\n  "url": "http://127.0.0.1:3000/mcp",\n  "tool_name": "get_weather",\n  "protocol_version": "2025-11-25"\n}',
   internal_sdk: '{\n  "sdk_name": "search_knowledge_base"\n}',
-  code_execution: '{\n  "language": "python"\n}',
-  a2a: '{\n  "card_url": "https://agent.example.com/.well-known/agent-card.json"\n}',
 }
 
 export function ToolsPage() {
@@ -79,7 +75,7 @@ export function ToolsPage() {
             render: (v: boolean) => (v ? <Tag color="red">需审批</Tag> : <Tag>普通</Tag>),
           },
           { title: '创建时间', dataIndex: 'created_at', render: fmtTime },
-          { title: '操作', render: (_, row) => <a onClick={() => navigate(`/tools/${row.id}`)}>Sandbox / 发布</a> },
+          { title: '操作', render: (_, row) => <a onClick={() => navigate(`/tools/${row.id}`)}>试调 / 发布</a> },
         ]}
       />
 

@@ -8,7 +8,6 @@ export async function listKBs(): Promise<KnowledgeBase[]> {
 
 export interface CreateKBRequest {
   name: string
-  embedding_model: string
 }
 
 export async function createKB(req: CreateKBRequest): Promise<KnowledgeBase> {
@@ -20,6 +19,7 @@ export interface SyncResult {
   listed: number
   ingested: number
   skipped: number
+  deleted: number
 }
 
 // 触发本地 Markdown 文件夹同步并 ingest。

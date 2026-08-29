@@ -1,5 +1,6 @@
 import { api } from './client'
 import type { Agent, AgentVersion, AgentVersionConfig, CreateAgentRequest, Conversation, Message } from './types'
+import type { ApprovalPresentation, ApprovalView } from './approval'
 import { useAuthStore } from '@/store/authStore'
 
 export async function listAgents(): Promise<Agent[]> {
@@ -89,6 +90,14 @@ export interface RunFinished {
   status: 'completed' | 'awaiting_approval'
 }
 
+export interface ApprovalRequired {
+  approval_id: string
+  conversation_id: string
+  tool_name: string
+  arguments: string
+  presentation?: ApprovalPresentation
+}
+
 // POST SSE 客户端。浏览器 EventSource 只支持 GET，这里通过 fetch + ReadableStream
 // 逐块解析标准 SSE frame，并保留认证头与多轮 conversation_id。
 export async function streamChat(
@@ -151,6 +160,8 @@ export async function streamChat(
 export interface ConversationDetail {
   conversation: Conversation
   messages: Message[]
+  trace_id?: string
+  approvals?: ApprovalView[]
 }
 
 export async function getConversation(id: string): Promise<ConversationDetail> {

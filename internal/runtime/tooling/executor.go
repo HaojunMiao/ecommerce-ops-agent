@@ -1,380 +1,318 @@
-// Package tooling 负责 Runtime 侧的工具解析、校验与调用。
+// Package tooling 提供 REST 与内部 SDK 工具的统一执行抽象。
 package tooling
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
-	"net"
-	"net/http"
-	"net/url"
 	"strings"
 	"time"
 
+	einotool "github.com/cloudwego/eino/components/tool"
 	"github.com/cloudwego/eino/schema"
-	jsonschema "github.com/eino-contrib/jsonschema"
+	"github.com/eino-contrib/jsonschema"
 	"github.com/xeipuuv/gojsonschema"
 
-	platformtool "github.com/HaojunMiao/ecommerce-ops-agent/internal/platform/tool"
+	"github.com/HaojunMiao/ecommerce-ops-agent/internal/platform/tool"
 )
 
-const maxResponseBytes = 1 << 20
-
-type Registry interface {
-	Resolve(ctx context.Context, workspaceID, versionID string) (platformtool.Version, error)
+// Executor 是所有工具执行器的统一接口。
+type Executor interface {
+	Execute(ctx context.Context, args json.RawMessage) (string, error)
 }
 
-type Call struct {
-	WorkspaceID    string
-	ToolVersionID  string
-	Arguments      []byte
-	IdempotencyKey string
-}
-
-type Result struct {
-	StatusCode int
-	Body       []byte
-}
-
-// SandboxRunner 是 code_execution Tool 依赖的最小执行端口。
-type SandboxRunner interface {
-	Run(ctx context.Context, language, code string) (string, error)
-}
-
-type Binding struct {
+// BuiltTool 把"给模型看的描述"与"实际执行器"打包在一起，供 Runtime Engine 使用。
+type BuiltTool struct {
 	Name            string
-	VersionID       string
-	SourceType      string
 	Info            *schema.ToolInfo
-	RequiresNetwork bool
-	KBScoped        bool
-	RestrictKBs     bool
-	AllowedKBs      []string
-	Sensitive       bool
+	Executor        Executor
+	Tool            einotool.InvokableTool // Eino ToolsNode/ADK 的标准执行入口
+	Sensitive       bool                   // 敏感工具调用前需人在环审批
+	RequiresNetwork bool                   // REST 工具受 Agent 网络策略约束
+	KBScoped        bool                   // search_knowledge_base 受 Agent/Skill KB allowlist 约束
+	ApprovalUI      ApprovalPresentation   // 敏感操作固定审批卡片的展示元数据
 }
 
-type Executor struct {
-	registry     Registry
-	client       *http.Client
-	allowedHosts map[string]struct{}
-	sandbox      SandboxRunner
-	// sdk 保存进程内工具名称到 Go 处理函数的映射。
-	sdk map[string]SDKHandler
+// ApprovalPresentation 只描述审批卡片中的业务文案，不携带任何动态 UI 协议。
+type ApprovalPresentation struct {
+	Title          string            `json:"title,omitempty"`
+	OperationLabel string            `json:"operation_label,omitempty"`
+	RiskLabel      string            `json:"risk_label,omitempty"`
+	FieldLabels    map[string]string `json:"field_labels,omitempty"`
+	FieldOrder     []string          `json:"field_order,omitempty"`
+	CurrencyFields map[string]string `json:"currency_fields,omitempty"`
 }
 
-// SDKHandler 是 internal_sdk 工具的执行函数。它不发 HTTP 请求，
-// 而是在当前进程内直接调用知识检索等平台能力。
-type SDKHandler func(ctx context.Context, workspaceID string, arguments map[string]any) (Result, error)
-
-func NewExecutor(registry Registry, client *http.Client, allowedHosts ...string) *Executor {
-	if client == nil {
-		client = &http.Client{Timeout: 10 * time.Second}
-	} else if client.Timeout <= 0 {
-		clone := *client
-		clone.Timeout = 10 * time.Second
-		client = &clone
+// InvokableTool 使用给定的 ToolInfo 构造 Eino 标准工具。传 nil 时沿用注册表中的描述。
+// Runtime 可借此按 Agent/Skill 的知识库授权收窄参数枚举，同时复用同一个执行器。
+func (b *BuiltTool) InvokableTool(info *schema.ToolInfo) einotool.InvokableTool {
+	if info == nil {
+		info = b.Info
 	}
-	allowed := make(map[string]struct{}, len(allowedHosts))
-	for _, host := range allowedHosts {
-		if normalized := strings.ToLower(strings.TrimSpace(host)); normalized != "" {
-			allowed[normalized] = struct{}{}
-		}
-	}
-	executor := &Executor{
-		registry: registry, client: client, allowedHosts: allowed,
-		sdk: make(map[string]SDKHandler),
-	}
-	clone := *client
-	if transport, ok := clone.Transport.(*http.Transport); ok {
-		clone.Transport = executor.secureTransport(transport.Clone())
-	} else if clone.Transport == nil {
-		clone.Transport = executor.secureTransport(http.DefaultTransport.(*http.Transport).Clone())
-	}
-	previousRedirect := clone.CheckRedirect
-	clone.CheckRedirect = func(req *http.Request, via []*http.Request) error {
-		if err := executor.validateEndpoint(req.URL); err != nil {
-			return err
-		}
-		if len(via) > 0 && !sameOrigin(via[0].URL, req.URL) {
-			return fmt.Errorf("cross-origin tool redirect is blocked")
-		}
-		if previousRedirect != nil {
-			return previousRedirect(req, via)
-		}
-		if len(via) >= 10 {
-			return fmt.Errorf("stopped after 10 redirects")
-		}
-		return nil
-	}
-	executor.client = &clone
-	return executor
+	return &executorInvokableTool{info: info, executor: b.Executor}
 }
 
-func (e *Executor) WithSandbox(runner SandboxRunner) *Executor {
-	e.sandbox = runner
-	return e
+type executorInvokableTool struct {
+	info     *schema.ToolInfo
+	executor Executor
 }
 
-// RegisterSDK 注册进程内工具实现。工具版本的 Endpoint 保存该注册名，
-// Execute 解析到 internal_sdk 后再通过名称找到对应处理函数。
-func (e *Executor) RegisterSDK(name string, handler SDKHandler) {
-	if strings.TrimSpace(name) != "" && handler != nil {
-		e.sdk[name] = handler
+func (t *executorInvokableTool) Info(context.Context) (*schema.ToolInfo, error) {
+	return t.info, nil
+}
+
+func (t *executorInvokableTool) InvokableRun(ctx context.Context, arguments string, _ ...einotool.Option) (string, error) {
+	return t.executor.Execute(ctx, json.RawMessage(arguments))
+}
+
+// Registry 按 toolID 解析配置并构造执行器。
+type Registry struct {
+	tools *tool.Service
+	sdk   map[string]sdkEntry // internal_sdk: name -> 执行器 + 描述
+}
+
+type sdkEntry struct {
+	exec     Executor
+	desc     string
+	paramsJS string // JSON Schema（可空）
+}
+
+// NewRegistry 创建工具注册表。
+func NewRegistry(tools *tool.Service) *Registry {
+	return &Registry{
+		tools: tools,
+		sdk:   make(map[string]sdkEntry),
 	}
 }
 
-func (e *Executor) Execute(ctx context.Context, call Call) (Result, error) {
-	if e.registry == nil {
-		return Result{}, fmt.Errorf("tool registry is required")
-	}
-	version, err := e.registry.Resolve(ctx, call.WorkspaceID, call.ToolVersionID)
-	if err != nil {
-		return Result{}, fmt.Errorf("resolve tool: %w", err)
-	}
-	var arguments map[string]any
-	decoder := json.NewDecoder(bytes.NewReader(call.Arguments))
-	decoder.UseNumber()
-	if err := decoder.Decode(&arguments); err != nil {
-		return Result{}, fmt.Errorf("arguments must be a JSON object: %w", err)
-	}
-	if decoder.Decode(&struct{}{}) != io.EOF {
-		return Result{}, fmt.Errorf("arguments must contain one JSON object")
-	}
-	if err := validateArguments(version.InputSchema, call.Arguments); err != nil {
-		return Result{}, err
-	}
-	if version.SourceType == "code_execution" {
-		if e.sandbox == nil {
-			return Result{}, fmt.Errorf("sandbox runner is not configured")
-		}
-		code, _ := arguments["code"].(string)
-		if strings.TrimSpace(code) == "" {
-			return Result{}, fmt.Errorf("code_execution requires a non-empty code argument")
-		}
-		language := strings.TrimSpace(version.Endpoint)
-		if language == "" {
-			language = "python"
-		}
-		output, err := e.sandbox.Run(ctx, language, code)
-		if err != nil {
-			return Result{}, fmt.Errorf("execute code tool: %w", err)
-		}
-		return Result{StatusCode: http.StatusOK, Body: []byte(output)}, nil
-	}
-	if version.SourceType == "internal_sdk" {
-		handler := e.sdk[version.Endpoint]
-		if handler == nil {
-			return Result{}, fmt.Errorf("internal SDK tool %q is not registered", version.Endpoint)
-		}
-		// 参数已经通过统一 JSON Schema 校验，内部工具直接复用解析后的 map。
-		return handler(ctx, call.WorkspaceID, arguments)
-	}
-	if version.SourceType == "mcp_server" {
-		endpoint, err := url.Parse(version.Endpoint)
-		if err != nil {
-			return Result{}, fmt.Errorf("parse MCP endpoint: %w", err)
-		}
-		if err := e.validateEndpoint(endpoint); err != nil {
-			return Result{}, err
-		}
-		toolName, _ := arguments["tool_name"].(string)
-		toolArguments, _ := arguments["arguments"].(map[string]any)
-		if strings.TrimSpace(toolName) == "" {
-			return Result{}, fmt.Errorf("MCP tool requires tool_name")
-		}
-		headers, err := toolAuthHeaders(version.AuthConfig)
-		if err != nil {
-			return Result{}, err
-		}
-		payload, err := callMCPTool(ctx, endpoint.String(), toolName, toolArguments, headers, e.client)
-		if err != nil {
-			return Result{}, err
-		}
-		return Result{StatusCode: http.StatusOK, Body: payload}, nil
-	}
-	if version.SourceType == "a2a" {
-		message, _ := arguments["message"].(string)
-		if message == "" {
-			message, _ = arguments["text"].(string)
-		}
-		if strings.TrimSpace(message) == "" {
-			return Result{}, fmt.Errorf("A2A tool requires a message or text argument")
-		}
-		remoteVersionID, _ := arguments["agent_version_id"].(string)
-		hosts := make([]string, 0, len(e.allowedHosts))
-		for host := range e.allowedHosts {
-			hosts = append(hosts, host)
-		}
-		client := NewA2AClient(version.Endpoint, hosts...)
-		client.client = e.client
-		result, err := client.Send(ctx, remoteVersionID, message)
-		if err != nil {
-			return Result{}, err
-		}
-		body, err := json.Marshal(result)
-		return Result{StatusCode: http.StatusOK, Body: body}, err
-	}
-	endpoint, err := url.Parse(version.Endpoint)
-	if err != nil {
-		return Result{}, fmt.Errorf("parse tool endpoint: %w", err)
-	}
-	if err := e.validateEndpoint(endpoint); err != nil {
-		return Result{}, err
-	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint.String(), bytes.NewReader(call.Arguments))
-	if err != nil {
-		return Result{}, err
-	}
-	req.Header.Set("Content-Type", "application/json")
-	headers, err := toolAuthHeaders(version.AuthConfig)
-	if err != nil {
-		return Result{}, err
-	}
-	for name, value := range headers {
-		req.Header.Set(name, value)
-	}
-	if key := strings.TrimSpace(call.IdempotencyKey); key != "" {
-		req.Header.Set("Idempotency-Key", key)
-	}
-	response, err := e.client.Do(req)
-	if err != nil {
-		return Result{}, fmt.Errorf("call tool: %w", err)
-	}
-	defer response.Body.Close()
-	body, err := io.ReadAll(io.LimitReader(response.Body, maxResponseBytes+1))
-	if err != nil {
-		return Result{}, fmt.Errorf("read tool response: %w", err)
-	}
-	if len(body) > maxResponseBytes {
-		return Result{}, fmt.Errorf("tool response exceeds %d bytes", maxResponseBytes)
-	}
-	result := Result{StatusCode: response.StatusCode, Body: body}
-	if response.StatusCode < 200 || response.StatusCode >= 300 {
-		return result, fmt.Errorf("tool returned HTTP %d", response.StatusCode)
-	}
-	return result, nil
+// RegisterSDK 注册一个 internal_sdk 工具（如 KB 检索）。name 必须与 Tool Registry
+// 中该工具的 endpoint_config.sdk_name 对应。
+func (r *Registry) RegisterSDK(name, desc, paramsJSONSchema string, exec Executor) {
+	r.sdk[name] = sdkEntry{exec: exec, desc: desc, paramsJS: paramsJSONSchema}
 }
 
-// secureTransport 在真正拨号前重新解析 allowlist 主机，并直接拨向已校验的 IP。
-// 这样 URL 校验、DNS 解析和 TCP 连接属于同一条策略链。
-func (e *Executor) secureTransport(transport *http.Transport) *http.Transport {
-	transport.Proxy = nil
-	dialer := &net.Dialer{Timeout: 10 * time.Second, KeepAlive: 30 * time.Second}
-	transport.DialContext = func(ctx context.Context, network, address string) (net.Conn, error) {
-		host, port, err := net.SplitHostPort(address)
-		if err != nil {
-			return nil, err
-		}
-		if _, ok := e.allowedHosts[strings.ToLower(strings.TrimSuffix(host, "."))]; !ok {
-			return nil, fmt.Errorf("tool dial host %q is not allowlisted", host)
-		}
-		if ip := net.ParseIP(host); ip != nil {
-			return dialer.DialContext(ctx, network, net.JoinHostPort(ip.String(), port))
-		}
-		addresses, err := net.DefaultResolver.LookupIPAddr(ctx, host)
-		if err != nil || len(addresses) == 0 {
-			return nil, fmt.Errorf("resolve tool host %q: %w", host, err)
-		}
-		var dialErr error
-		for _, candidate := range addresses {
-			var connection net.Conn
-			connection, dialErr = dialer.DialContext(ctx, network, net.JoinHostPort(candidate.IP.String(), port))
-			if dialErr == nil {
-				return connection, nil
+// Build 根据 toolID 取出已发布的配置，构造一个可执行 + 可描述的 BuiltTool。
+func (r *Registry) Build(ctx context.Context, toolID string) (*BuiltTool, error) {
+	cfg, err := r.tools.GetToolConfig(ctx, toolID)
+	if err != nil {
+		return nil, fmt.Errorf("get tool config: %w", err)
+	}
+
+	t, err := r.tools.GetToolMeta(ctx, toolID)
+	if err != nil {
+		return nil, fmt.Errorf("get tool meta: %w", err)
+	}
+
+	exec, paramsJS, err := r.buildExecutor(cfg)
+	if err != nil {
+		return nil, err
+	}
+	exec, err = withSchemaValidation(exec, paramsJS)
+	if err != nil {
+		return nil, fmt.Errorf("compile tool input schema: %w", err)
+	}
+
+	info, err := buildToolInfo(t.Name, t.Description, paramsJS)
+	if err != nil {
+		return nil, fmt.Errorf("build tool info: %w", err)
+	}
+
+	built := &BuiltTool{
+		Name: t.Name, Info: info, Executor: exec, Sensitive: t.Sensitive,
+		RequiresNetwork: sourceRequiresNetwork(cfg.SourceType),
+		KBScoped:        isKBScopedTool(cfg),
+		ApprovalUI:      approvalPresentation(cfg.Schema),
+	}
+	built.Tool = built.InvokableTool(nil)
+	return built, nil
+}
+
+// BuildByVersion 按【工具版本 ID】构造执行器:用于 Agent 快照里 pin 死的工具版本。
+//
+// 与 Build(取 current)相对——这是不可变快照的执行入口:老对话即使工具发了新版,
+// 也仍按它创建时 pin 的那个版本执行。Build 仍保留给"试调当前草稿版本"用。
+func (r *Registry) BuildByVersion(ctx context.Context, toolVersionID string) (*BuiltTool, error) {
+	cfg, toolID, err := r.tools.GetToolConfigByVersion(ctx, toolVersionID)
+	if err != nil {
+		return nil, fmt.Errorf("get tool config by version: %w", err)
+	}
+
+	t, err := r.tools.GetToolMeta(ctx, toolID)
+	if err != nil {
+		return nil, fmt.Errorf("get tool meta: %w", err)
+	}
+
+	exec, paramsJS, err := r.buildExecutor(cfg)
+	if err != nil {
+		return nil, err
+	}
+	exec, err = withSchemaValidation(exec, paramsJS)
+	if err != nil {
+		return nil, fmt.Errorf("compile tool input schema: %w", err)
+	}
+
+	info, err := buildToolInfo(t.Name, t.Description, paramsJS)
+	if err != nil {
+		return nil, fmt.Errorf("build tool info: %w", err)
+	}
+
+	built := &BuiltTool{
+		Name: t.Name, Info: info, Executor: exec, Sensitive: t.Sensitive,
+		RequiresNetwork: sourceRequiresNetwork(cfg.SourceType),
+		KBScoped:        isKBScopedTool(cfg),
+		ApprovalUI:      approvalPresentation(cfg.Schema),
+	}
+	built.Tool = built.InvokableTool(nil)
+	return built, nil
+}
+
+func approvalPresentation(schema map[string]any) ApprovalPresentation {
+	raw, _ := schema["x-kbot-approval"].(map[string]any)
+	p := ApprovalPresentation{
+		FieldLabels: make(map[string]string), CurrencyFields: make(map[string]string),
+	}
+	p.Title, _ = raw["title"].(string)
+	p.OperationLabel, _ = raw["operation_label"].(string)
+	p.RiskLabel, _ = raw["risk_label"].(string)
+	if fields, ok := raw["field_labels"].(map[string]any); ok {
+		for name, value := range fields {
+			if label, ok := value.(string); ok {
+				p.FieldLabels[name] = label
 			}
 		}
-		return nil, fmt.Errorf("dial tool host %q: %w", host, dialErr)
 	}
-	return transport
-}
-
-// Bind 将平台中固定版本的工具转换为 Eino 可以交给模型的 ToolInfo。
-func (e *Executor) Bind(ctx context.Context, workspaceID string, versionIDs []string) ([]Binding, error) {
-	bindings := make([]Binding, 0, len(versionIDs))
-	for _, versionID := range versionIDs {
-		version, err := e.registry.Resolve(ctx, workspaceID, versionID)
-		if err != nil {
-			return nil, fmt.Errorf("resolve tool binding %s: %w", versionID, err)
+	if order, ok := raw["field_order"].([]any); ok {
+		for _, value := range order {
+			if name, ok := value.(string); ok {
+				p.FieldOrder = append(p.FieldOrder, name)
+			}
 		}
-		params := &jsonschema.Schema{}
-		if err := json.Unmarshal(version.InputSchema, params); err != nil {
-			return nil, fmt.Errorf("decode schema for tool %s: %w", version.Name, err)
+	}
+	if currencies, ok := raw["currency_fields"].(map[string]any); ok {
+		for name, value := range currencies {
+			if symbol, ok := value.(string); ok {
+				p.CurrencyFields[name] = symbol
+			}
 		}
-		bindings = append(bindings, Binding{
-			Name: version.Name, VersionID: version.ID,
-			SourceType:      version.SourceType,
-			Info:            &schema.ToolInfo{Name: version.Name, Desc: version.Description, ParamsOneOf: schema.NewParamsOneOfByJSONSchema(params)},
-			RequiresNetwork: version.SourceType == "rest_api" || version.SourceType == "mcp_server" || version.SourceType == "a2a" || version.SourceType == "",
-			KBScoped:        version.SourceType == "internal_sdk" && version.Endpoint == "search_knowledge_base",
-			Sensitive:       version.Sensitive,
-		})
 	}
-	return bindings, nil
+	return p
 }
 
-func (e *Executor) validateEndpoint(endpoint *url.URL) error {
-	if endpoint == nil || (endpoint.Scheme != "http" && endpoint.Scheme != "https") || endpoint.Host == "" || endpoint.User != nil {
-		return fmt.Errorf("tool endpoint must be an absolute HTTP URL without user info")
+func sourceRequiresNetwork(sourceType string) bool {
+	switch sourceType {
+	case "rest_api":
+		return true
+	default:
+		return false
 	}
-	host := strings.ToLower(endpoint.Hostname())
-	if _, ok := e.allowedHosts[host]; !ok {
-		return fmt.Errorf("tool endpoint host %q is not allowlisted", host)
-	}
-	return nil
 }
 
-func validateArguments(schemaJSON, arguments []byte) error {
-	compiled, err := gojsonschema.NewSchema(gojsonschema.NewBytesLoader(schemaJSON))
+func isKBScopedTool(cfg *tool.ToolConfig) bool {
+	if cfg.SourceType != "internal_sdk" {
+		return false
+	}
+	name, _ := cfg.EndpointConfig["sdk_name"].(string)
+	return name == "search_knowledge_base"
+}
+
+// buildExecutor 是 source_type → Factory 的路由（§14.2 的 factories map）。
+// 返回执行器和用于描述参数的 JSON Schema 字符串。
+func (r *Registry) buildExecutor(cfg *tool.ToolConfig) (Executor, string, error) {
+	schemaJSON := marshalOrEmpty(cfg.Schema)
+	httpClient := r.tools.HTTPClient(30 * time.Second)
+	switch cfg.SourceType {
+	case "rest_api":
+		return newRESTExecutor(httpClient, cfg), schemaJSON, nil
+	case "internal_sdk":
+		name, _ := cfg.EndpointConfig["sdk_name"].(string)
+		entry, ok := r.sdk[name]
+		if !ok {
+			return nil, "", fmt.Errorf("internal_sdk %q not registered", name)
+		}
+		js := entry.paramsJS
+		if js == "" {
+			js = schemaJSON
+		}
+		return entry.exec, js, nil
+	default:
+		return nil, "", fmt.Errorf("unknown source_type: %s", cfg.SourceType)
+	}
+}
+
+// buildToolInfo 把工具的参数 JSON Schema 转成 Eino 的 ToolInfo。
+func buildToolInfo(name, desc, paramsJSONSchema string) (*schema.ToolInfo, error) {
+	info := &schema.ToolInfo{Name: name, Desc: desc}
+	if paramsJSONSchema == "" || paramsJSONSchema == "{}" {
+		return info, nil
+	}
+	js := &jsonschema.Schema{}
+	if err := json.Unmarshal([]byte(paramsJSONSchema), js); err != nil {
+		return nil, fmt.Errorf("unmarshal params schema: %w", err)
+	}
+	info.ParamsOneOf = schema.NewParamsOneOfByJSONSchema(js)
+	return info, nil
+}
+
+func marshalOrEmpty(m map[string]interface{}) string {
+	if len(m) == 0 {
+		return ""
+	}
+	b, err := json.Marshal(m)
 	if err != nil {
-		return fmt.Errorf("compile stored tool schema: %w", err)
+		return ""
 	}
-	result, err := compiled.Validate(gojsonschema.NewBytesLoader(arguments))
-	if err != nil {
-		return fmt.Errorf("validate tool arguments: %w", err)
-	}
-	if result.Valid() {
-		return nil
-	}
-	problems := make([]string, 0, len(result.Errors()))
-	for _, problem := range result.Errors() {
-		problems = append(problems, problem.String())
-	}
-	return fmt.Errorf("tool arguments violate schema: %s", strings.Join(problems, "; "))
+	return string(b)
 }
 
-func toolAuthHeaders(raw string) (map[string]string, error) {
-	if strings.TrimSpace(raw) == "" {
-		return nil, nil
+type schemaValidatingExecutor struct {
+	next   Executor
+	schema *gojsonschema.Schema
+}
+
+func withSchemaValidation(next Executor, schemaJSON string) (Executor, error) {
+	if next == nil || schemaJSON == "" || schemaJSON == "{}" {
+		return next, nil
 	}
-	var config struct {
-		Headers map[string]string `json:"headers"`
+	compiled, err := gojsonschema.NewSchema(gojsonschema.NewStringLoader(schemaJSON))
+	if err != nil {
+		return nil, err
 	}
-	if err := json.Unmarshal([]byte(raw), &config); err != nil {
-		return nil, fmt.Errorf("invalid tool auth config: %w", err)
+	return &schemaValidatingExecutor{next: next, schema: compiled}, nil
+}
+
+func (e *schemaValidatingExecutor) Execute(ctx context.Context, args json.RawMessage) (string, error) {
+	if len(args) == 0 || !json.Valid(args) {
+		return "", fmt.Errorf("tool input must be valid JSON")
 	}
-	for name := range config.Headers {
-		switch strings.ToLower(strings.TrimSpace(name)) {
-		case "", "host", "content-length", "connection", "transfer-encoding":
-			return nil, fmt.Errorf("tool auth header %q is not allowed", name)
+	result, err := e.schema.Validate(gojsonschema.NewBytesLoader(args))
+	if err != nil {
+		return "", fmt.Errorf("validate tool input: %w", err)
+	}
+	if !result.Valid() {
+		problems := make([]string, 0, len(result.Errors()))
+		for _, item := range result.Errors() {
+			problems = append(problems, item.String())
+		}
+		return "", fmt.Errorf("tool input violates schema: %s", strings.Join(problems, "; "))
+	}
+	return e.next.Execute(ctx, args)
+}
+
+// authHeaders 解析 Tool 的通用 Header 鉴权配置。
+// 支持 {"header":"Authorization","value":"Bearer ..."} 与 {"headers":{"X-Key":"..."}}。
+func authHeaders(auth map[string]interface{}) map[string]string {
+	headers := make(map[string]string)
+	if h, ok := auth["header"].(string); ok && h != "" {
+		if v, ok := auth["value"].(string); ok {
+			headers[h] = v
 		}
 	}
-	return config.Headers, nil
-}
-
-func sameOrigin(left, right *url.URL) bool {
-	return strings.EqualFold(left.Scheme, right.Scheme) &&
-		strings.EqualFold(strings.TrimSuffix(left.Hostname(), "."), strings.TrimSuffix(right.Hostname(), ".")) &&
-		effectivePort(left) == effectivePort(right)
-}
-
-func effectivePort(value *url.URL) string {
-	if port := value.Port(); port != "" {
-		return port
+	if raw, ok := auth["headers"].(map[string]interface{}); ok {
+		for k, v := range raw {
+			if s, ok := v.(string); ok && k != "" {
+				headers[k] = s
+			}
+		}
 	}
-	if strings.EqualFold(value.Scheme, "https") {
-		return "443"
-	}
-	return "80"
+	return headers
 }

@@ -1,223 +1,377 @@
-// Package kb 管理课堂版知识库与显式 ingest 状态机。
+// Package kb 提供知识库管理与 ingest 管道。
 package kb
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"errors"
 	"fmt"
+	"io"
+	"path/filepath"
 	"strings"
-	"sync"
-	"sync/atomic"
 	"time"
 
+	"github.com/hibiken/asynq"
+
 	"github.com/HaojunMiao/ecommerce-ops-agent/internal/connector"
+	"github.com/HaojunMiao/ecommerce-ops-agent/internal/connector/markdown_folder"
+	"github.com/HaojunMiao/ecommerce-ops-agent/internal/domain"
+	"github.com/HaojunMiao/ecommerce-ops-agent/internal/runtime/retriever"
+	"github.com/HaojunMiao/ecommerce-ops-agent/internal/util"
 )
 
-// KnowledgeBase 是一个工作空间下的知识库容器。
-type KnowledgeBase struct {
-	ID          string    `json:"id"`
-	WorkspaceID string    `json:"workspace_id"`
-	Name        string    `json:"name"`
-	Status      string    `json:"status"`
-	CreatedAt   time.Time `json:"created_at"`
+const maxDocumentBytes = 10 << 20
+
+// TaskEnqueuer 是 kb.Service 投递异步 ingest 的最小接口(jobs.Client 满足之)。
+// 为 nil 时 SyncMarkdownFolder 退回进程内同步 ingest(单测 / e2e / 无 Redis)。
+type TaskEnqueuer interface {
+	Enqueue(task *asynq.Task, opts ...asynq.Option) (*asynq.TaskInfo, error)
 }
 
-// Document 是知识库内部保存的文档。与 connector.Document 相比，
-// 它增加了平台生成的 ID、所属知识库以及切片结果。
-type Document struct {
-	ID        string   `json:"id"`
-	KBID      string   `json:"kb_id"`
-	SourceURI string   `json:"source_uri"`
-	Title     string   `json:"title"`
-	Content   string   `json:"content"`
-	Checksum  string   `json:"checksum"`
-	Chunks    []string `json:"chunks"`
+// Store 是 KB 的存储接口。
+type Store interface {
+	CreateKB(ctx context.Context, kb *domain.KnowledgeBase) error
+	GetKB(ctx context.Context, kbID string) (*domain.KnowledgeBase, error)
+	ListKBs(ctx context.Context, workspaceID string) ([]*domain.KnowledgeBase, error)
+	UpdateKBStatus(ctx context.Context, kbID, status string) error
+	UpdateKBEmbeddingModel(ctx context.Context, kbID, model string) error
+	BeginKBReindex(ctx context.Context, kbID, embeddingIdentity string) error
+	ActivateKBIfReady(ctx context.Context, kbID, embeddingIdentity string) (bool, error)
+
+	UpsertDocument(ctx context.Context, doc *domain.KbDocument) error
+	GetDocument(ctx context.Context, docID string) (*domain.KbDocument, error)
+	ListDocuments(ctx context.Context, kbID string) ([]*domain.KbDocument, error)
+	DeleteDocument(ctx context.Context, docID string) error
+	MarkDocumentStatusIfCurrent(ctx context.Context, docID, fingerprint, embeddingIdentity, status string) (bool, error)
+
+	CreateIngestJob(ctx context.Context, job *domain.KbIngestJob) error
+	UpdateIngestJob(ctx context.Context, job *domain.KbIngestJob) error
+	ListIngestJobs(ctx context.Context, kbID string) ([]*domain.KbIngestJob, error)
+
+	UpsertConnector(ctx context.Context, c *domain.ConnectorInstance) error
+	ListConnectors(ctx context.Context, kbID string) ([]*domain.ConnectorInstance, error)
 }
 
-// IngestJob 描述一次知识导入的进度和统计结果。
-// 第 10 课仍在请求内同步执行，它暂时只是状态记录，不是异步队列任务。
-type IngestJob struct {
-	ID         string     `json:"id"`
-	KBID       string     `json:"kb_id"`
-	Stage      string     `json:"stage"`
-	Status     string     `json:"status"`
-	Error      string     `json:"error,omitempty"`
-	Stages     []string   `json:"stages"`
-	Listed     int        `json:"listed"`
-	Ingested   int        `json:"ingested"`
-	Skipped    int        `json:"skipped"`
-	CreatedAt  time.Time  `json:"created_at"`
-	FinishedAt *time.Time `json:"finished_at,omitempty"`
-}
-
-// Service 是课堂版内存知识库服务。
-// bases 按知识库 ID 保存元数据；documents 再按 kbID 和 SourceURI 两级索引文档。
+// Service KB 服务。
 type Service struct {
-	mu        sync.RWMutex
-	bases     map[string]KnowledgeBase
-	documents map[string]map[string]Document
-	sequence  atomic.Uint64
+	store                Store
+	retriever            retriever.Searcher // 内存版或 pgvector 版
+	enqueuer             TaskEnqueuer       // 非 nil 则 Sync 走异步(worker ingest);nil 则进程内同步
+	chunkSize            int
+	overlap              int
+	markdownAllowedRoots []string
 }
 
-func NewService() *Service {
-	return &Service{
-		bases:     make(map[string]KnowledgeBase),
-		documents: make(map[string]map[string]Document),
-	}
+// NewService 创建 KB 服务。enqueuer 可为 nil(单测 / e2e 走同步 ingest)。
+func NewService(store Store, r retriever.Searcher, enqueuer TaskEnqueuer) *Service {
+	return &Service{store: store, retriever: r, enqueuer: enqueuer, chunkSize: 500, overlap: 100}
 }
 
-// Create 在指定工作空间内创建一个空知识库。
-func (s *Service) Create(_ context.Context, workspaceID, name string) (*KnowledgeBase, error) {
-	if strings.TrimSpace(workspaceID) == "" || strings.TrimSpace(name) == "" {
-		return nil, fmt.Errorf("workspace and knowledge base name are required")
-	}
-	base := KnowledgeBase{
-		ID: s.nextID("kb"), WorkspaceID: workspaceID, Name: strings.TrimSpace(name),
-		Status: "ready", CreatedAt: time.Now().UTC(),
-	}
-	s.mu.Lock()
-	s.bases[base.ID] = base
-	s.documents[base.ID] = make(map[string]Document)
-	s.mu.Unlock()
-	return &base, nil
+// ConfigureMarkdownAllowedRoots 设置 HTTP Connector 可以读取的服务端目录根。
+// 内部静态资料导入不经过该入口。
+func (s *Service) ConfigureMarkdownAllowedRoots(roots []string) {
+	s.markdownAllowedRoots = append([]string(nil), roots...)
 }
 
-// List 只返回当前工作空间的知识库，避免跨工作空间读取。
-func (s *Service) List(_ context.Context, workspaceID string) []KnowledgeBase {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
-	result := make([]KnowledgeBase, 0, len(s.bases))
-	for _, base := range s.bases {
-		if base.WorkspaceID == workspaceID {
-			result = append(result, base)
-		}
-	}
-	return result
+// CreateKBRequest 创建知识库请求。
+type CreateKBRequest struct {
+	WorkspaceID string `json:"workspace_id"`
+	Name        string `json:"name"`
+	CreatedBy   string `json:"created_by"`
 }
 
-// Sync 运行一次显式的知识导入流水线：
-// parse(读取标准文档) -> chunk(切片) -> embed(占位) -> index(保存) -> done。
-func (s *Service) Sync(ctx context.Context, workspaceID, kbID string, source connector.Connector) (*IngestJob, error) {
-	job := &IngestJob{
-		ID: s.nextID("ingest"), KBID: kbID, Stage: "parse", Status: "running",
-		CreatedAt: time.Now().UTC(),
+// CreateKB 创建知识库。
+func (s *Service) CreateKB(ctx context.Context, req CreateKBRequest) (*domain.KnowledgeBase, error) {
+	kb := &domain.KnowledgeBase{
+		ID:             util.GenerateID(),
+		WorkspaceID:    req.WorkspaceID,
+		Name:           req.Name,
+		ChunkingConfig: `{"size":500,"overlap":100}`,
+		EmbeddingModel: s.retriever.Embedder().Identity(),
+		Status:         "active",
+		CreatedBy:      req.CreatedBy,
+		CreatedAt:      time.Now(),
+		UpdatedAt:      time.Now(),
 	}
-	if source == nil {
-		return s.fail(job, "parse", fmt.Errorf("connector is required"))
+	if err := s.store.CreateKB(ctx, kb); err != nil {
+		return nil, fmt.Errorf("create kb: %w", err)
 	}
-	if err := s.ensureWorkspace(workspaceID, kbID); err != nil {
-		return s.fail(job, "parse", err)
-	}
+	return kb, nil
+}
 
-	// parse：Connector 屏蔽具体来源，知识库服务只接收统一 Document。
-	documents, err := source.Scan(ctx)
+// ListKBs 列出知识库。
+func (s *Service) ListKBs(ctx context.Context, workspaceID string) ([]*domain.KnowledgeBase, error) {
+	return s.store.ListKBs(ctx, workspaceID)
+}
+
+// KBExists 为 Skill 发布门禁校验知识库 ID 与工作空间归属。
+func (s *Service) KBExists(ctx context.Context, workspaceID, kbID string) (bool, error) {
+	base, err := s.store.GetKB(ctx, kbID)
 	if err != nil {
-		return s.fail(job, "parse", err)
+		return false, fmt.Errorf("get kb: %w", err)
 	}
-	job.Stages = append(job.Stages, "parse")
-	job.Listed = len(documents)
-	if len(documents) == 0 {
-		return s.fail(job, "chunk", fmt.Errorf("connector returned no markdown documents"))
-	}
-
-	// 先在局部变量中完成全部切片。只有所有文档都处理成功，才整体写入 Service，
-	// 避免切到一半失败时留下部分更新的数据。
-	indexed := make(map[string]Document, len(documents))
-	job.Stage = "chunk"
-	for _, document := range documents {
-		chunks := chunkText(document.Content, 500, 50)
-		if len(chunks) == 0 {
-			return s.fail(job, "chunk", fmt.Errorf("document %s has no indexable content", document.SourceURI))
-		}
-		indexed[document.SourceURI] = Document{
-			ID: s.nextID("doc"), KBID: kbID, SourceURI: document.SourceURI,
-			Title: document.Title, Content: document.Content, Checksum: document.Checksum,
-			Chunks: chunks,
-		}
-	}
-	job.Stages = append(job.Stages, "chunk")
-
-	// 第 10 课尚未接入嵌入模型，embed 只是流程占位；index 也只是写入
-	// 下方的内存 map，还不是真正的全文或向量检索索引。
-	job.Stage = "embed"
-	job.Stages = append(job.Stages, "embed")
-	job.Stage = "index"
-
-	// SourceURI 标识同一来源文档；Checksum 相同则复用原 ID 并计为 skipped。
-	s.mu.Lock()
-	for sourceURI, document := range indexed {
-		if previous, ok := s.documents[kbID][sourceURI]; ok && previous.Checksum == document.Checksum {
-			document.ID = previous.ID
-			job.Skipped++
-		} else {
-			job.Ingested++
-		}
-		s.documents[kbID][sourceURI] = document
-	}
-	s.mu.Unlock()
-	job.Stages = append(job.Stages, "index")
-
-	now := time.Now().UTC()
-	job.Stage, job.Status, job.FinishedAt = "done", "succeeded", &now
-	job.Stages = append(job.Stages, "done")
-	return job, nil
+	return base.WorkspaceID == workspaceID, nil
 }
 
-// Documents 返回知识库中的全部文档，并复制 Chunks 切片，避免调用方
-// 通过返回值修改 Service 内部保存的切片底层数组。
-func (s *Service) Documents(_ context.Context, workspaceID, kbID string) ([]Document, error) {
-	if err := s.ensureWorkspace(workspaceID, kbID); err != nil {
-		return nil, err
+// EnsureKBWorkspace 校验知识库属于当前工作空间。
+func (s *Service) EnsureKBWorkspace(ctx context.Context, kbID, workspaceID string) error {
+	base, err := s.store.GetKB(ctx, kbID)
+	if err != nil {
+		return fmt.Errorf("get kb: %w", err)
 	}
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
-	result := make([]Document, 0, len(s.documents[kbID]))
-	for _, document := range s.documents[kbID] {
-		document.Chunks = append([]string(nil), document.Chunks...)
-		result = append(result, document)
-	}
-	return result, nil
-}
-
-// ensureWorkspace 同时完成“知识库存在”和“属于当前工作空间”的校验，
-// 对外统一表现为 not found，避免跨工作空间枚举资源。
-func (s *Service) ensureWorkspace(workspaceID, kbID string) error {
-	s.mu.RLock()
-	base, ok := s.bases[kbID]
-	s.mu.RUnlock()
-	if !ok || base.WorkspaceID != workspaceID {
-		return fmt.Errorf("knowledge base %s not found", kbID)
+	if workspaceID == "" || base.WorkspaceID != workspaceID {
+		return fmt.Errorf("knowledge base does not belong to current workspace")
 	}
 	return nil
 }
 
-func (s *Service) fail(job *IngestJob, stage string, err error) (*IngestJob, error) {
-	now := time.Now().UTC()
-	job.Stage, job.Status, job.Error, job.FinishedAt = stage, "failed", err.Error(), &now
-	return job, err
-}
-
-// nextID 仅用于课堂内存实现。进程重启后会重新计数，不适合作为生产 ID 方案。
-func (s *Service) nextID(prefix string) string {
-	return fmt.Sprintf("%s-%d", prefix, s.sequence.Add(1))
-}
-
-// chunkText 按 Unicode 字符切片，避免按字节截断中文；overlap 让相邻切片
-// 保留部分上下文，降低关键信息刚好落在边界时的语义损失。
-func chunkText(content string, size, overlap int) []string {
-	runes := []rune(strings.TrimSpace(content))
-	if len(runes) == 0 || size <= 0 || overlap < 0 || overlap >= size {
-		return nil
+// AddMarkdownFolder 给 KB 绑定一个本地 Markdown 文件夹 connector（reference）。
+func (s *Service) AddMarkdownFolder(ctx context.Context, kbID, rootPath string) (*domain.ConnectorInstance, error) {
+	if _, err := s.store.GetKB(ctx, kbID); err != nil {
+		return nil, fmt.Errorf("get kb: %w", err)
 	}
+	ci := &domain.ConnectorInstance{
+		ID:            util.GenerateID(),
+		KbID:          kbID,
+		ConnectorKind: "markdown_folder",
+		ConfigJSON:    fmt.Sprintf(`{"root_path":%q}`, rootPath),
+		CreatedAt:     time.Now(),
+	}
+	if err := s.store.UpsertConnector(ctx, ci); err != nil {
+		return nil, fmt.Errorf("upsert connector: %w", err)
+	}
+	return ci, nil
+}
 
-	var chunks []string
-	for start := 0; start < len(runes); start += size - overlap {
-		end := min(start+size, len(runes))
-		chunks = append(chunks, string(runes[start:end]))
-		if end == len(runes) {
-			break
+// SyncResult 汇总一次连接器同步的结果。
+type SyncResult struct {
+	Listed   int `json:"listed"`
+	Ingested int `json:"ingested"`
+	Skipped  int `json:"skipped"` // hash 未变，跳过
+	Deleted  int `json:"deleted"` // Connector 全量快照中已经消失
+}
+
+// ingestPipelineVersion 参与文档指纹计算。切片、分词或索引语义发生变化时递增，
+// 即使源文件没变也会触发一次重建；完成后再次同步仍会按指纹跳过。
+const ingestPipelineVersion = "rune-chunk-v2-gse-lexical-v1"
+
+// SyncMarkdownFolder 扫描指定路径的 Markdown 文件夹，对新增/变更的文档跑 ingest。
+// 直接传 rootPath，便于 API / 测试使用;实际部署可从 ConnectorInstance.config 解析。
+func (s *Service) SyncMarkdownFolder(ctx context.Context, kbID, rootPath string) (*SyncResult, error) {
+	conn := markdown_folder.New(rootPath)
+	return s.syncConnector(ctx, kbID, conn)
+}
+
+// SyncMarkdownFolderAllowed 为外部 API 提供受根目录约束的 Markdown 同步。
+func (s *Service) SyncMarkdownFolderAllowed(ctx context.Context, kbID, rootPath string) (*SyncResult, error) {
+	resolved, err := s.allowedMarkdownRoot(rootPath)
+	if err != nil {
+		return nil, err
+	}
+	return s.SyncMarkdownFolder(ctx, kbID, resolved)
+}
+
+func (s *Service) allowedMarkdownRoot(requested string) (string, error) {
+	if strings.TrimSpace(requested) == "" || len(s.markdownAllowedRoots) == 0 {
+		return "", fmt.Errorf("markdown connector root is not allowed")
+	}
+	requestedAbs, err := filepath.Abs(requested)
+	if err != nil {
+		return "", fmt.Errorf("resolve markdown connector root: %w", err)
+	}
+	requestedReal, err := filepath.EvalSymlinks(requestedAbs)
+	if err != nil {
+		return "", fmt.Errorf("resolve markdown connector root: %w", err)
+	}
+	for _, allowed := range s.markdownAllowedRoots {
+		allowedAbs, absErr := filepath.Abs(strings.TrimSpace(allowed))
+		if absErr != nil {
+			continue
+		}
+		allowedReal, evalErr := filepath.EvalSymlinks(allowedAbs)
+		if evalErr != nil {
+			continue
+		}
+		rel, relErr := filepath.Rel(allowedReal, requestedReal)
+		if relErr == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) && !filepath.IsAbs(rel) {
+			return requestedReal, nil
 		}
 	}
-	return chunks
+	return "", fmt.Errorf("markdown connector root is outside configured allowed roots")
+}
+
+func (s *Service) syncConnector(ctx context.Context, kbID string, conn connector.Connector) (*SyncResult, error) {
+	base, err := s.store.GetKB(ctx, kbID)
+	if err != nil {
+		return nil, fmt.Errorf("get kb: %w", err)
+	}
+	metas, _, err := conn.ListDocuments(ctx, "")
+	if err != nil {
+		return nil, fmt.Errorf("list documents: %w", err)
+	}
+	embeddingIdentity := s.retriever.Embedder().Identity()
+	if base.EmbeddingModel != embeddingIdentity {
+		if err := s.store.BeginKBReindex(ctx, kbID, embeddingIdentity); err != nil {
+			return nil, fmt.Errorf("begin kb reindex: %w", err)
+		}
+		base.EmbeddingModel = embeddingIdentity
+		base.Status = "indexing"
+	}
+
+	res := &SyncResult{Listed: len(metas)}
+	if snapshot, ok := conn.(connector.SnapshotConnector); ok {
+		current := make(map[string]struct{}, len(metas))
+		for _, meta := range metas {
+			current[meta.ID] = struct{}{}
+		}
+		docs, err := s.store.ListDocuments(ctx, kbID)
+		if err != nil {
+			return res, fmt.Errorf("list stored documents: %w", err)
+		}
+		for _, doc := range docs {
+			if doc.SourceType != "connector" || !snapshot.OwnsSource(doc.SourceURI) {
+				continue
+			}
+			if _, exists := current[doc.SourceURI]; exists {
+				continue
+			}
+			if err := s.retriever.RemoveDocument(ctx, kbID, doc.ID); err != nil {
+				return res, fmt.Errorf("remove deleted document index %s: %w", doc.SourceURI, err)
+			}
+			if err := s.store.DeleteDocument(ctx, doc.ID); err != nil {
+				return res, fmt.Errorf("delete missing document %s: %w", doc.SourceURI, err)
+			}
+			res.Deleted++
+		}
+	}
+	for _, m := range metas {
+		if err := ctx.Err(); err != nil {
+			return res, err
+		}
+		existing, err := s.store.GetDocument(ctx, docID(kbID, m.ID))
+		if err != nil {
+			return res, fmt.Errorf("get document %s: %w", m.ID, err)
+		}
+		fingerprint := s.ingestFingerprint(m.Hash)
+		if existing != nil && existing.Hash == fingerprint && existing.EmbeddingIdentity == embeddingIdentity && existing.Status == "processed" {
+			res.Skipped++
+			continue
+		}
+
+		rc, err := conn.FetchDocument(ctx, m.ID)
+		if err != nil {
+			return res, fmt.Errorf("fetch document %s: %w", m.ID, err)
+		}
+		content, err := io.ReadAll(io.LimitReader(rc, maxDocumentBytes+1))
+		closeErr := rc.Close()
+		if err != nil {
+			return res, fmt.Errorf("read document %s: %w", m.ID, err)
+		}
+		if closeErr != nil {
+			return res, fmt.Errorf("close document %s: %w", m.ID, closeErr)
+		}
+		if len(content) > maxDocumentBytes {
+			return res, fmt.Errorf("document %s exceeds %d bytes", m.ID, maxDocumentBytes)
+		}
+
+		doc := &domain.KbDocument{
+			ID:                docID(kbID, m.ID),
+			KbID:              kbID,
+			SourceType:        "connector",
+			SourceURI:         m.ID,
+			Hash:              fingerprint,
+			EmbeddingIdentity: embeddingIdentity,
+			Classification:    "internal",
+			Status:            "pending",
+			CreatedAt:         time.Now(),
+		}
+		if err := s.store.UpsertDocument(ctx, doc); err != nil {
+			return res, fmt.Errorf("upsert document: %w", err)
+		}
+
+		if s.enqueuer != nil {
+			// 跨进程闭环:投递到 worker 异步 ingest(写 kb_chunks),server 检索直接读库。
+			task, err := NewIngestTask(IngestPayload{
+				KbID: kbID, DocumentID: doc.ID, Content: string(content),
+				Fingerprint: fingerprint, EmbeddingIdentity: embeddingIdentity,
+			})
+			if err != nil {
+				return res, fmt.Errorf("build ingest task %s: %w", m.ID, err)
+			}
+			if _, err := s.enqueuer.Enqueue(task); err != nil {
+				// 相同文档版本在短去重窗口内已经排队时视为已受理。
+				if errors.Is(err, asynq.ErrDuplicateTask) {
+					res.Skipped++
+					continue
+				}
+				return res, fmt.Errorf("enqueue ingest %s: %w", m.ID, err)
+			}
+		} else {
+			// 同步管道(无 Redis / 单测):直接在本进程 ingest。
+			if err := s.IngestDocumentVersion(ctx, kbID, doc.ID, fingerprint, embeddingIdentity, string(content)); err != nil {
+				return res, fmt.Errorf("ingest document %s: %w", m.ID, err)
+			}
+		}
+		res.Ingested++
+	}
+	if _, err := s.store.ActivateKBIfReady(ctx, kbID, embeddingIdentity); err != nil {
+		return res, fmt.Errorf("activate kb after sync: %w", err)
+	}
+	return res, nil
+}
+
+func (s *Service) ingestFingerprint(sourceHash string) string {
+	// 模型、供应商地址或维度变化都必须触发重新向量化；密钥不进入指纹。
+	identity := s.retriever.Embedder().Identity()
+	sum := sha256.Sum256([]byte(ingestPipelineVersion + "\x00" + identity + "\x00" + sourceHash))
+	return hex.EncodeToString(sum[:])
+}
+
+// docID 由 kbID + 来源路径派生稳定 ID，保证同一文档重复同步指向同一记录。
+func docID(kbID, sourceURI string) string {
+	h := sha256.Sum256([]byte(kbID + "\x00" + sourceURI))
+	return hex.EncodeToString(h[:16])
+}
+
+// Search 在 KB 上做混合检索。
+func (s *Service) Search(ctx context.Context, kbID, query string, k int) ([]retriever.Passage, error) {
+	if err := s.ensureSearchable(ctx, kbID); err != nil {
+		return nil, err
+	}
+	return s.retriever.Search(ctx, kbID, query, k)
+}
+
+// SearchMode 按 bm25、vector 或 hybrid 模式检索。
+// 若底层 retriever 未实现 ModeSearcher,回退到默认 Hybrid Search(三档结果相同)。
+func (s *Service) SearchMode(ctx context.Context, kbID, query string, k int, mode string) ([]retriever.Passage, error) {
+	if err := s.ensureSearchable(ctx, kbID); err != nil {
+		return nil, err
+	}
+	if ms, ok := s.retriever.(retriever.ModeSearcher); ok {
+		return ms.SearchMode(ctx, kbID, query, k, mode)
+	}
+	return s.retriever.Search(ctx, kbID, query, k)
+}
+
+func (s *Service) ensureSearchable(ctx context.Context, kbID string) error {
+	base, err := s.store.GetKB(ctx, kbID)
+	if err != nil {
+		return fmt.Errorf("get kb: %w", err)
+	}
+	currentIdentity := s.retriever.Embedder().Identity()
+	if base.Status != "active" || base.EmbeddingModel != currentIdentity {
+		return fmt.Errorf("knowledge base is indexing for embedding identity %q", currentIdentity)
+	}
+	return nil
+}
+
+// ListDocuments 列出知识库文档。
+func (s *Service) ListDocuments(ctx context.Context, kbID string) ([]*domain.KbDocument, error) {
+	return s.store.ListDocuments(ctx, kbID)
+}
+
+// ListConnectors 列出知识库连接器实例。
+func (s *Service) ListConnectors(ctx context.Context, kbID string) ([]*domain.ConnectorInstance, error) {
+	return s.store.ListConnectors(ctx, kbID)
 }

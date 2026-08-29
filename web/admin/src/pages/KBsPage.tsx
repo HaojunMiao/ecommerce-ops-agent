@@ -78,15 +78,14 @@ export function KBsPage() {
         <Form
           form={form}
           layout="vertical"
-          initialValues={{ embedding_model: 'local' }}
           onFinish={(v) => create.mutate(v)}
         >
           <Form.Item name="name" label="名称" rules={[{ required: true, message: '请输入名称' }]}>
             <Input placeholder="如:售后知识库" />
           </Form.Item>
-          <Form.Item name="embedding_model" label="嵌入模型">
-            <Input placeholder="local / text-embedding-3-small" />
-          </Form.Item>
+          <Typography.Text type="secondary">
+            新知识库自动使用平台当前配置的向量模型，文档同步时记录实际模型。
+          </Typography.Text>
         </Form>
       </Modal>
     </div>

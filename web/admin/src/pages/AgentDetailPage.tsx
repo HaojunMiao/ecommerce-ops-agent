@@ -42,13 +42,15 @@ export function AgentDetailPage() {
 
   const openNewVersion = () => {
     const latest = versionsQ.data?.[0]
-    form.setFieldsValue({ ...EMPTY_CONFIG, ...(latest?.config ?? {}) })
+    const editable = { ...(latest?.config ?? {}) }
+    delete editable.system_prompt_version_id
+    form.setFieldsValue({ ...EMPTY_CONFIG, ...editable })
     setOpen(true)
   }
   const confirmPromote = (version: AgentVersion, env: string) => {
     Modal.confirm({
       title: `将 v${version.version} 晋升到 ${env}`,
-      content: env === 'prod' ? '新会话和引用 prod 环境的 Team 将使用该版本。' : '环境指针会立即更新。',
+      content: env === 'prod' ? '之后创建的新会话将使用该版本；已有会话继续使用原快照。' : '环境指针会立即更新。',
       okText: '确认晋升',
       okButtonProps: env === 'prod' ? { danger: true } : undefined,
       onOk: () => promote.mutateAsync({ version, env }),
@@ -99,7 +101,10 @@ export function AgentDetailPage() {
               title: '配置',
               render: (_, row: AgentVersion) => (
                 <Space wrap>
-                  <Tag>{row.config.system_prompt_id ? 'Prompt 中心' : '字面量 Prompt'}</Tag>
+                  <Tag>Prompt v{row.config.system_prompt_version_id?.slice(0, 8) ?? '无效'}</Tag>
+                  <Tag color={row.config.model_config_version_id ? 'cyan' : 'red'}>
+                    Model v{row.config.model_config_version_id?.slice(0, 8) ?? '无效'}
+                  </Tag>
                   <Tag color={row.config.user_prompt_id ? 'purple' : 'default'}>
                     {row.config.user_prompt_id ? 'User Template' : '自由输入'}
                   </Tag>

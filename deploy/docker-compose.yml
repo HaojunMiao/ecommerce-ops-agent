@@ -1,0 +1,106 @@
+services:
+  app:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    ports:
+      - "${KBOT_HTTP_PORT:-8080}:8080"
+    environment: &app-env
+      KBOT_ADDR: ":8080"
+      KBOT_CORS_ALLOWED_ORIGINS: ${KBOT_CORS_ALLOWED_ORIGINS:-http://localhost:8080,http://localhost:5173}
+      KBOT_DATABASE_URL: postgres://kbot:kbot@db:5432/kbot?sslmode=disable
+      KBOT_REDIS_URL: redis://redis:6379/0
+      KBOT_LLM_BASE_URL: ${KBOT_LLM_BASE_URL:-https://api.deepseek.com/v1}
+      KBOT_LLM_API_KEY: ${KBOT_LLM_API_KEY:-}
+      KBOT_LLM_MODEL: ${KBOT_LLM_MODEL:-deepseek-v4-pro}
+      KBOT_LLM_TIMEOUT_MS: ${KBOT_LLM_TIMEOUT_MS:-120000}
+      KBOT_LLM_MAX_RETRIES: ${KBOT_LLM_MAX_RETRIES:-1}
+      KBOT_LLM_INPUT_PRICE_PER_MILLION: ${KBOT_LLM_INPUT_PRICE_PER_MILLION:-0}
+      KBOT_LLM_OUTPUT_PRICE_PER_MILLION: ${KBOT_LLM_OUTPUT_PRICE_PER_MILLION:-0}
+      KBOT_LLM_CACHED_INPUT_PRICE_PER_MILLION: ${KBOT_LLM_CACHED_INPUT_PRICE_PER_MILLION:-0}
+      KBOT_JWT_SECRET_KEY: ${KBOT_JWT_SECRET_KEY:-dev-secret-key-32-chars-minimum}
+      KBOT_CREDENTIAL_ENCRYPTION_KEY: ${KBOT_CREDENTIAL_ENCRYPTION_KEY:-dev-credential-key-minimum-32-chars}
+      KBOT_OTLP_ENDPOINT: ${KBOT_OTLP_ENDPOINT:-}
+      KBOT_OTLP_HEADERS: ${KBOT_OTLP_HEADERS:-}
+      KBOT_OTEL_SAMPLE_RATIO: ${KBOT_OTEL_SAMPLE_RATIO:-1}
+      KBOT_OTEL_CAPTURE_CONTENT: ${KBOT_OTEL_CAPTURE_CONTENT:-false}
+      KBOT_SERVICE_VERSION: ${KBOT_SERVICE_VERSION:-dev}
+      KBOT_LANGFUSE_UI_URL: ${KBOT_LANGFUSE_UI_URL:-}
+      KBOT_LANGFUSE_PROJECT_ID: ${KBOT_LANGFUSE_PROJECT_ID:-}
+      KBOT_ENVIRONMENT: ${KBOT_ENVIRONMENT:-dev}
+      KBOT_EMBEDDER: ${KBOT_EMBEDDER:-local}
+      KBOT_EMBEDDER_BASE_URL: ${KBOT_EMBEDDER_BASE_URL:-https://api.siliconflow.cn/v1}
+      KBOT_EMBEDDER_API_KEY: ${KBOT_EMBEDDER_API_KEY:-}
+      KBOT_EMBEDDER_DIM: ${KBOT_EMBEDDER_DIM:-2048}
+      KBOT_EMBEDDER_MODEL: ${KBOT_EMBEDDER_MODEL:-Qwen/Qwen3-Embedding-4B}
+      KBOT_TOOL_ALLOWED_HOSTS: ${KBOT_TOOL_ALLOWED_HOSTS:-crossborder-sim}
+      KBOT_TOOL_ALLOW_PRIVATE_NETWORK: ${KBOT_TOOL_ALLOW_PRIVATE_NETWORK:-false}
+      KBOT_KB_MARKDOWN_ALLOWED_ROOTS: ${KBOT_KB_MARKDOWN_ALLOWED_ROOTS:-/scenarios}
+      KBOT_AUTOSEED_ADMIN: ${KBOT_AUTOSEED_ADMIN:-true}
+      KBOT_AUTOSEED_ADMIN_EMAIL: ${KBOT_AUTOSEED_ADMIN_EMAIL:-admin@example.com}
+      KBOT_AUTOSEED_ADMIN_PASSWORD: ${KBOT_AUTOSEED_ADMIN_PASSWORD:-admin12345}
+    depends_on:
+      db: { condition: service_healthy }
+      redis: { condition: service_healthy }
+      migrate: { condition: service_completed_successfully }
+
+  worker:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.worker
+    environment: *app-env
+    depends_on:
+      db: { condition: service_healthy }
+      redis: { condition: service_healthy }
+      migrate: { condition: service_completed_successfully }
+
+  migrate:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.migrate
+    environment:
+      KBOT_DATABASE_URL: postgres://kbot:kbot@db:5432/kbot?sslmode=disable
+      KBOT_LLM_BASE_URL: ${KBOT_LLM_BASE_URL:-https://api.deepseek.com/v1}
+      KBOT_LLM_API_KEY: ${KBOT_LLM_API_KEY:-}
+      KBOT_LLM_MODEL: ${KBOT_LLM_MODEL:-deepseek-v4-pro}
+      KBOT_LLM_TIMEOUT_MS: ${KBOT_LLM_TIMEOUT_MS:-120000}
+      KBOT_LLM_MAX_RETRIES: ${KBOT_LLM_MAX_RETRIES:-1}
+      KBOT_LLM_INPUT_PRICE_PER_MILLION: ${KBOT_LLM_INPUT_PRICE_PER_MILLION:-0}
+      KBOT_LLM_OUTPUT_PRICE_PER_MILLION: ${KBOT_LLM_OUTPUT_PRICE_PER_MILLION:-0}
+      KBOT_LLM_CACHED_INPUT_PRICE_PER_MILLION: ${KBOT_LLM_CACHED_INPUT_PRICE_PER_MILLION:-0}
+    depends_on:
+      db: { condition: service_healthy }
+    command: ["-up"]
+    restart: "no"
+
+  db:
+    image: pgvector/pgvector:pg16@sha256:00ba258a66dac104fd5171074a0084462a64a1369d8513f3d0a634e2f24d15bc
+    environment:
+      POSTGRES_USER: kbot
+      POSTGRES_PASSWORD: kbot
+      POSTGRES_DB: kbot
+    ports:
+      - "${KBOT_POSTGRES_PORT:-5432}:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U kbot"]
+      interval: 3s
+      timeout: 3s
+      retries: 10
+    volumes:
+      - kbot_pgdata:/var/lib/postgresql/data
+
+  redis:
+    image: redis:7-alpine@sha256:6ab0b6e7381779332f97b8ca76193e45b0756f38d4c0dcda72dbb3c32061ab99
+    ports:
+      - "${KBOT_REDIS_PORT:-6379}:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 3s
+      timeout: 3s
+      retries: 10
+    volumes:
+      - kbot_redisdata:/data
+
+volumes:
+  kbot_pgdata:
+  kbot_redisdata:

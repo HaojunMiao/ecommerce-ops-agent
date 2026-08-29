@@ -21,7 +21,7 @@ export async function createTool(req: CreateToolRequest): Promise<Tool> {
   return data
 }
 
-// Sandbox 试调:真正构造执行器调用一次并落账(供 Publish 门禁)。input 是 JSON 串。
+// 真正调用工具并记录试调结果，成功后才允许发布。
 export async function testTool(toolId: string, input: unknown): Promise<ToolTestRun> {
   const { data } = await api.post<ToolTestRun>(`/tools/${toolId}/test`, { input })
   return data

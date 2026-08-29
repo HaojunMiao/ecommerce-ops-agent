@@ -1,7 +1,6 @@
 package service
 
 import (
-	"crypto/sha256"
 	"errors"
 	"fmt"
 	"sync"
@@ -10,89 +9,61 @@ import (
 	"github.com/HaojunMiao/ecommerce-ops-agent/projects/crossborder/internal/domain"
 )
 
-// 模拟跨境电商后台数据库+业务服务
-// 数据库表使用Go map模拟
-/*
-orders 模拟订单表，key为订单ID，value为订单
-inventory 模拟库存表，key为仓库+SKU，value为库存记录
-transfers 模拟调拨单表，key为调拨单的id，value为调拨记录
-idempotency 模拟幂等记录表，key为幂等key，value为请求指纹+上次返回的结果
-*/
-
-//
-
 var (
-	ErrNotFound            = errors.New("business resource not found")
-	ErrInvalidTransition   = errors.New("invalid business state transition")
-	ErrInsufficientStock   = errors.New("insufficient inventory")
-	ErrIdempotencyKey      = errors.New("idempotency_key is required")
-	ErrIdempotencyConflict = errors.New("idempotency key was already used for a different request")
+	ErrNotFound          = errors.New("business resource not found")
+	ErrInvalidTransition = errors.New("invalid business state transition")
+	ErrInsufficientStock = errors.New("insufficient inventory")
+	ErrIdempotencyKey    = errors.New("idempotency_key is required")
 )
 
-// 调货接口请求体
-type TransferRequest struct {
-	SKU            string `json:"sku"`
-	FromWarehouse  string `json:"from_warehouse"`  // 从哪个仓库调货
-	ToWarehouse    string `json:"to_warehouse"`    // 调货到哪个仓库
-	IdempotencyKey string `json:"idempotency_key"` // 幂等key，避免重复调货
-	Quantity       int    `json:"quantity"`        // 调货数量
-	DryRun         bool   `json:"dry_run"`         // 是否只是模拟调货，不实际扣减库存
-}
-
-// 相关数据存储在内存中，方便测试和演示（不涉及数据库操作，用内存中的map模拟数据库）
 type Service struct {
-	mu          sync.RWMutex
-	orders      map[string]domain.Order
-	inventory   map[string]domain.InventoryBalance
-	transfers   map[string]domain.InventoryTransfer
-	idempotency map[string]idempotencyRecord // 幂等记录表
+	mu              sync.RWMutex
+	orders          map[string]domain.Order
+	inventory       map[string]domain.InventoryBalance
+	statements      map[string]domain.SettlementStatement
+	transfers       map[string]domain.InventoryTransfer
+	refunds         map[string]domain.Refund
+	reconciliations map[string]domain.ReconciliationCase
+	idempotency     map[string]any
 }
 
-// 记录某个请求是否处理过，以及当时返回了什么
-type idempotencyRecord struct {
-	fingerprint [32]byte
-	transfer    domain.InventoryTransfer
-}
-
-// NewSeeded 创建一个带有初始数据的Service实例（创建带有预置订单和库存数据的服务）
-// mock 初始订单数据和库存数据（不为了写一个agent项目而从头写一个跨境电商项目）
 func NewSeeded() *Service {
+	shipBy := time.Now().UTC().Add(8 * time.Hour).Truncate(time.Second)
 	return &Service{
 		orders: map[string]domain.Order{
 			"TTS-20260801-1001": {
-				ID: "TTS-20260801-1001", Market: "US", Currency: "USD",
-				Amount: 129.99, Status: domain.OrderAwaitingShipment,
-				FulfillmentWH: "WH-CN-SZ", CancellationOpen: true,
+				ID: "TTS-20260801-1001", ShopID: "SHOP-US-001", Market: "US",
+				Currency: "USD", Amount: 129.99, Status: domain.OrderAwaitingShipment,
+				FulfillmentWH: "WH-CN-SZ", ShipBy: shipBy, CancellationOpen: true,
 				Items: []domain.OrderItem{{SKU: "SKU-BLACK-M-01", Quantity: 1, Price: 129.99}},
 			},
 		},
 		inventory: map[string]domain.InventoryBalance{
-			inventoryKey("WH-CN-SZ", "SKU-BLACK-M-01"): {
-				WarehouseID: "WH-CN-SZ", SKU: "SKU-BLACK-M-01", Available: 0,
-			},
-			inventoryKey("WH-US-LAX", "SKU-BLACK-M-01"): {
-				WarehouseID: "WH-US-LAX", SKU: "SKU-BLACK-M-01", Available: 18,
-			},
+			inventoryKey("WH-CN-SZ", "SKU-BLACK-M-01"):  {WarehouseID: "WH-CN-SZ", SKU: "SKU-BLACK-M-01", Available: 0},
+			inventoryKey("WH-US-LAX", "SKU-BLACK-M-01"): {WarehouseID: "WH-US-LAX", SKU: "SKU-BLACK-M-01", Available: 18},
 		},
-		transfers:   make(map[string]domain.InventoryTransfer),
-		idempotency: make(map[string]idempotencyRecord),
+		statements: map[string]domain.SettlementStatement{
+			"STMT-2026-31": {ID: "STMT-2026-31", ExpectedAmount: 118.47, PaidAmount: 106.95, Currency: "USD", Status: "difference_detected"},
+		},
+		transfers: make(map[string]domain.InventoryTransfer), refunds: make(map[string]domain.Refund),
+		reconciliations: make(map[string]domain.ReconciliationCase), idempotency: make(map[string]any),
 	}
 }
 
-// GetOrder 根据订单ID查询订单
-func (s *Service) GetOrder(id string) (domain.Order, bool) {
+func (s *Service) GetOrder(id string) (domain.Order, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	// 模拟 SELECT * FROM orders WHERE id = ?
 	order, ok := s.orders[id]
-	return order, ok
+	if !ok {
+		return domain.Order{}, ErrNotFound
+	}
+	return order, nil
 }
 
-// Inventory 根据SKU查询库存（返回在不同仓库的库存情况）
 func (s *Service) Inventory(sku string) []domain.InventoryBalance {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	result := make([]domain.InventoryBalance, 0, len(s.inventory))
+	var result []domain.InventoryBalance
 	for _, balance := range s.inventory {
 		if balance.SKU == sku {
 			result = append(result, balance)
@@ -101,112 +72,127 @@ func (s *Service) Inventory(sku string) []domain.InventoryBalance {
 	return result
 }
 
-// CreateTransfer 创建调货记录（后续会交给大模型调用，如基于历史数据，交给大模型进行调货决策）
-// 在这里（业务层面）要保证幂等性，即防止大模型重复调用带来的幂等问题（保证同一业务请求重复到达时只产生一次实际效果）
+func (s *Service) ShippingOptions(orderID string) ([]domain.ShippingOption, error) {
+	if _, err := s.GetOrder(orderID); err != nil {
+		return nil, err
+	}
+	return []domain.ShippingOption{
+		{Provider: "4PX", Service: "US Priority", Cost: 12.80, Currency: "USD", DeliveryDays: 7, SLAEligible: true},
+		{Provider: "UPS", Service: "Ground", Cost: 9.40, Currency: "USD", DeliveryDays: 4, SLAEligible: true},
+	}, nil
+}
+
+type TransferRequest struct {
+	SKU, FromWarehouse, ToWarehouse, IdempotencyKey string
+	Quantity                                        int
+	DryRun                                          bool
+}
+
 func (s *Service) CreateTransfer(req TransferRequest) (domain.InventoryTransfer, error) {
-	// 1. 参数校验
-	// 没传幂等key，直接拒绝执行
 	if req.IdempotencyKey == "" {
 		return domain.InventoryTransfer{}, ErrIdempotencyKey
 	}
-	// 调拨数量小于等于0，或来源仓与目标仓相同，报错
 	if req.Quantity <= 0 || req.FromWarehouse == req.ToWarehouse {
 		return domain.InventoryTransfer{}, ErrInvalidTransition
 	}
-
-	// 2. 幂等校验
-	// 加互斥锁，保证整套（查库存、改库存）的流程不被并发插入打断，必须作为一个整体执行。
 	s.mu.Lock()
 	defer s.mu.Unlock()
-
-	// 请求的指纹（用请求中的关键参数构造一个字符串/哈希值，用于唯一标识一个请求）
-	fingerprint := transferFingerprint(req)
-	if cached, ok := s.idempotency[req.IdempotencyKey]; ok {
-		// 查到了这个幂等key
-		if cached.fingerprint != fingerprint {
-			// 如果不一样，说明同一个幂等key被用在了不同的请求上，返回冲突错误
-			return domain.InventoryTransfer{}, ErrIdempotencyConflict
-		}
-		return cached.transfer, nil // 如果一样，说明是重复请求，直接返回之前的结果
+	if cached, ok := s.idempotency["transfer:"+req.IdempotencyKey]; ok {
+		return cached.(domain.InventoryTransfer), nil
 	}
-
-	// 注：idempotencyKey由调用方生成，同一次逻辑操作的所有重试必须使用相同key，新的业务操作使用新的key
-	// idempotencyKey的设计是关键，关乎到幂等粒度，标识”这是哪一次业务操作“
-	// idempotency表可以理解为数据库表，不是redis缓存。
-
-	// 3. 库存校验
-	// 否则，说明是第一次请求，继续处理，拼接调货记录的数据
-	fromKey := inventoryKey(req.FromWarehouse, req.SKU) // 生成唯一的库存记录键
-	toKey := inventoryKey(req.ToWarehouse, req.SKU)
-
-	// from是来源仓库的库存记录，下面的to是目标仓库的库存记录
+	fromKey, toKey := inventoryKey(req.FromWarehouse, req.SKU), inventoryKey(req.ToWarehouse, req.SKU)
 	from, ok := s.inventory[fromKey]
-	// 库存中找不到这个仓库的这个商品，报错。因为来源库存必须存在（目标库存可以不存在)
 	if !ok {
 		return domain.InventoryTransfer{}, ErrNotFound
 	}
-	// 判断库存是否足够调货需求
 	if from.Available < req.Quantity {
 		return domain.InventoryTransfer{}, ErrInsufficientStock
 	}
-
-	// 如果是测试 DryRUn，不用转移库存数据（不修改库存数据、不写入transfers表）
-	// 但会写入idempotency表（幂等记录)
 	if req.DryRun {
-		transfer := domain.InventoryTransfer{
-			SKU:           req.SKU,
-			FromWarehouse: req.FromWarehouse,
-			ToWarehouse:   req.ToWarehouse,
-			Quantity:      req.Quantity,
-			Status:        "validated",
-		}
-
-		s.idempotency[req.IdempotencyKey] = idempotencyRecord{
-			fingerprint: fingerprint,
-			transfer:    transfer,
-		}
-		return transfer, nil
+		return domain.InventoryTransfer{SKU: req.SKU, FromWarehouse: req.FromWarehouse, ToWarehouse: req.ToWarehouse, Quantity: req.Quantity, Status: "validated"}, nil
 	}
-
-	// 4. 创建调库存单子
-
-	// 相当于数据库事务操作，模拟更新库存（from和to就是库存表的两条记录，分别是SKU在来源仓库和目标仓库的库存记录）
 	to := s.inventory[toKey]
-	to.WarehouseID = req.ToWarehouse
-	to.SKU = req.SKU
-	from.Available -= req.Quantity // 真正减库存
+	to.WarehouseID, to.SKU = req.ToWarehouse, req.SKU
+	from.Available -= req.Quantity
 	to.Available += req.Quantity
-	// 更新完from和to两个inventory结构体对象，写回“库存表”中
-	s.inventory[fromKey] = from
-	s.inventory[toKey] = to
-
-	transfer := domain.InventoryTransfer{
-		ID:            fmt.Sprintf("TR-%04d", len(s.transfers)+1),
-		SKU:           req.SKU,
-		FromWarehouse: req.FromWarehouse,
-		ToWarehouse:   req.ToWarehouse,
-		Quantity:      req.Quantity,
-		Status:        "created",
-		CreatedAt:     time.Now().UTC(),
-	}
-	// 创建的调拨数据行（transfer）写入transfers表（即放进map）
+	s.inventory[fromKey], s.inventory[toKey] = from, to
+	transfer := domain.InventoryTransfer{ID: fmt.Sprintf("TR-%04d", len(s.transfers)+1), SKU: req.SKU, FromWarehouse: req.FromWarehouse, ToWarehouse: req.ToWarehouse, Quantity: req.Quantity, Status: "created", CreatedAt: time.Now().UTC()}
 	s.transfers[transfer.ID] = transfer
-
-	// 保存幂等记录
-	s.idempotency[req.IdempotencyKey] = idempotencyRecord{
-		fingerprint: fingerprint,
-		transfer:    transfer,
-	}
-
+	s.idempotency["transfer:"+req.IdempotencyKey] = transfer
 	return transfer, nil
-
 }
 
-// 通过“仓库 + SKU”生成库存记录的唯一键，即ID
-func inventoryKey(warehouse, sku string) string {
-	return warehouse + "|" + sku
+type RefundRequest struct {
+	OrderID, Reason, IdempotencyKey string
+	Amount                          float64
+	DryRun                          bool
 }
 
-func transferFingerprint(req TransferRequest) [32]byte {
-	return sha256.Sum256([]byte(fmt.Sprintf("%s\x00%s\x00%s\x00%d\x00%t", req.SKU, req.FromWarehouse, req.ToWarehouse, req.Quantity, req.DryRun)))
+func (s *Service) ApproveRefund(req RefundRequest) (domain.Refund, error) {
+	if req.IdempotencyKey == "" {
+		return domain.Refund{}, ErrIdempotencyKey
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if cached, ok := s.idempotency["refund:"+req.IdempotencyKey]; ok {
+		return cached.(domain.Refund), nil
+	}
+	order, ok := s.orders[req.OrderID]
+	if !ok {
+		return domain.Refund{}, ErrNotFound
+	}
+	if order.Status != domain.OrderAwaitingShipment || req.Amount <= 0 || req.Amount > order.Amount {
+		return domain.Refund{}, ErrInvalidTransition
+	}
+	if req.DryRun {
+		return domain.Refund{OrderID: order.ID, Amount: req.Amount, Currency: order.Currency, Reason: req.Reason, Status: "validated"}, nil
+	}
+	order.Status = domain.OrderCancelled
+	s.orders[order.ID] = order
+	refund := domain.Refund{ID: fmt.Sprintf("RF-%04d", len(s.refunds)+1), OrderID: order.ID, Amount: req.Amount, Currency: order.Currency, Reason: req.Reason, Status: "approved", CreatedAt: time.Now().UTC()}
+	s.refunds[refund.ID] = refund
+	s.idempotency["refund:"+req.IdempotencyKey] = refund
+	return refund, nil
 }
+
+func (s *Service) GetStatement(id string) (domain.SettlementStatement, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	statement, ok := s.statements[id]
+	if !ok {
+		return domain.SettlementStatement{}, ErrNotFound
+	}
+	return statement, nil
+}
+
+type ReconciliationRequest struct {
+	StatementID, Reason, IdempotencyKey string
+	DryRun                              bool
+}
+
+func (s *Service) CreateReconciliation(req ReconciliationRequest) (domain.ReconciliationCase, error) {
+	if req.IdempotencyKey == "" {
+		return domain.ReconciliationCase{}, ErrIdempotencyKey
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if cached, ok := s.idempotency["reconciliation:"+req.IdempotencyKey]; ok {
+		return cached.(domain.ReconciliationCase), nil
+	}
+	statement, ok := s.statements[req.StatementID]
+	if !ok {
+		return domain.ReconciliationCase{}, ErrNotFound
+	}
+	if statement.Status != "difference_detected" {
+		return domain.ReconciliationCase{}, ErrInvalidTransition
+	}
+	if req.DryRun {
+		return domain.ReconciliationCase{StatementID: statement.ID, Difference: statement.ExpectedAmount - statement.PaidAmount, Reason: req.Reason, Status: "validated"}, nil
+	}
+	item := domain.ReconciliationCase{ID: fmt.Sprintf("RC-%04d", len(s.reconciliations)+1), StatementID: statement.ID, Difference: statement.ExpectedAmount - statement.PaidAmount, Reason: req.Reason, Status: "submitted", CreatedAt: time.Now().UTC()}
+	s.reconciliations[item.ID] = item
+	s.idempotency["reconciliation:"+req.IdempotencyKey] = item
+	return item, nil
+}
+
+func inventoryKey(warehouse, sku string) string { return warehouse + "|" + sku }

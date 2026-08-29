@@ -1,8 +1,8 @@
-import { Table, Form, Input, InputNumber, Button, Space, Typography, Tag, Drawer, Descriptions, message } from 'antd'
-import { SearchOutlined, ExportOutlined } from '@ant-design/icons'
+import { Table, Form, Input, InputNumber, Button, Typography, Tag, Drawer, Descriptions } from 'antd'
+import { SearchOutlined } from '@ant-design/icons'
 import { useState } from 'react'
-import { useQuery, useMutation } from '@tanstack/react-query'
-import { listAuditLogs, exportAudit, type AuditFilter } from '@/api/audit'
+import { useQuery } from '@tanstack/react-query'
+import { listAuditLogs, type AuditFilter } from '@/api/audit'
 import type { AuditLog } from '@/api/types'
 import { fmtTime } from '@/lib/format'
 
@@ -14,14 +14,6 @@ export function AuditPage() {
   const { data = [], isLoading } = useQuery({
     queryKey: ['audit-logs', filter],
     queryFn: () => listAuditLogs(filter),
-  })
-
-  const exportM = useMutation({
-    mutationFn: (conversationId: string) => exportAudit(conversationId),
-    onSuccess: (r) => {
-      message.success(`已导出 ${r.count} 条`)
-      window.open(r.url, '_blank')
-    },
   })
 
   return (
@@ -47,19 +39,9 @@ export function AuditPage() {
           <InputNumber min={1} max={1000} />
         </Form.Item>
         <Form.Item>
-          <Space>
-            <Button type="primary" htmlType="submit" icon={<SearchOutlined />}>
-              查询
-            </Button>
-            <Button
-              icon={<ExportOutlined />}
-              disabled={!filter.conversation_id}
-              loading={exportM.isPending}
-              onClick={() => filter.conversation_id && exportM.mutate(filter.conversation_id)}
-            >
-              导出该会话 CSV
-            </Button>
-          </Space>
+          <Button type="primary" htmlType="submit" icon={<SearchOutlined />}>
+            查询
+          </Button>
         </Form.Item>
       </Form>
 

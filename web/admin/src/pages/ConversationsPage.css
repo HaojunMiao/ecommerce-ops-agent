@@ -5,6 +5,13 @@
   gap: 16px;
 }
 
+.conversation-page-layout.is-transcript {
+  height: 100%;
+  min-height: 0;
+  align-items: stretch;
+  overflow: hidden;
+}
+
 .conversation-history-panel {
   position: sticky;
   top: 16px;
@@ -132,6 +139,62 @@
 
 .conversation-main-panel {
   min-width: 0;
+}
+
+.conversation-page-layout.is-transcript .conversation-history-panel {
+  position: static;
+  height: 100%;
+  min-height: 0;
+  max-height: none;
+}
+
+.conversation-page-layout.is-transcript .conversation-main-panel {
+  display: flex;
+  height: 100%;
+  min-height: 0;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.conversation-toolbar {
+  flex: 0 0 auto;
+  margin-bottom: 16px;
+}
+
+.conversation-context-alert {
+  flex: 0 0 auto;
+  margin-bottom: 12px;
+}
+
+.conversation-transcript-card.ant-card {
+  min-height: 420px;
+  margin-bottom: 12px;
+}
+
+.conversation-page-layout.is-transcript .conversation-transcript-card.ant-card {
+  display: flex;
+  min-height: 0;
+  flex: 1 1 auto;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.conversation-page-layout.is-transcript .conversation-transcript-card .ant-card-head {
+  flex: 0 0 auto;
+}
+
+.conversation-page-layout.is-transcript .conversation-transcript-card .ant-card-body {
+  min-height: 0;
+  flex: 1 1 auto;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+  scrollbar-width: thin;
+}
+
+.conversation-input-bar.ant-space-compact {
+  width: 100%;
+  flex: 0 0 auto;
 }
 
 .task-composer {
@@ -396,6 +459,98 @@
   box-shadow: 0 7px 16px rgb(73 101 220 / 20%);
 }
 
+/* 会话气泡里的 Markdown 渲染（仅 assistant 消息） */
+.chat-md {
+  min-width: 0;
+  overflow-wrap: break-word;
+  font-size: 14px;
+}
+
+.chat-md > :first-child {
+  margin-top: 0;
+}
+
+.chat-md > :last-child {
+  margin-bottom: 0;
+}
+
+.chat-md p,
+.chat-md ul,
+.chat-md ol,
+.chat-md blockquote,
+.chat-md pre,
+.chat-md table {
+  margin: 6px 0;
+}
+
+.chat-md h1,
+.chat-md h2,
+.chat-md h3,
+.chat-md h4,
+.chat-md h5,
+.chat-md h6 {
+  margin: 12px 0 6px;
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.chat-md ul,
+.chat-md ol {
+  padding-left: 20px;
+}
+
+.chat-md code {
+  padding: 1px 5px;
+  font-size: 12.5px;
+  background: rgb(15 23 42 / 8%);
+  border-radius: 4px;
+}
+
+.chat-md pre {
+  padding: 10px 12px;
+  overflow-x: auto;
+  color: #e2e8f0;
+  background: #1e293b;
+  border-radius: 8px;
+  scrollbar-width: thin;
+}
+
+.chat-md pre code {
+  padding: 0;
+  color: inherit;
+  background: transparent;
+}
+
+.chat-md table {
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+.chat-md th,
+.chat-md td {
+  padding: 4px 10px;
+  border: 1px solid #dbe1ea;
+}
+
+.chat-md th {
+  background: rgb(15 23 42 / 5%);
+}
+
+.chat-md blockquote {
+  padding-left: 10px;
+  color: #526079;
+  border-left: 3px solid #d0d7e2;
+}
+
+.chat-md a {
+  color: #1677ff;
+}
+
+.chat-md img {
+  max-width: 100%;
+}
+
+
 @media (max-width: 1100px) {
   .conversation-page-layout {
     grid-template-columns: 240px minmax(0, 1fr);
@@ -422,10 +577,19 @@
     grid-template-columns: 1fr;
   }
 
+  .conversation-page-layout.is-transcript {
+    grid-template-rows: minmax(144px, 28%) minmax(0, 1fr);
+  }
+
   .conversation-history-panel {
     position: static;
     min-height: 0;
     max-height: 320px;
+  }
+
+  .conversation-page-layout.is-transcript .conversation-history-panel {
+    height: 100%;
+    max-height: none;
   }
 
   .task-composer-header {

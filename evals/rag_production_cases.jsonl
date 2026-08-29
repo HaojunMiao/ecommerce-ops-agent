@@ -1,0 +1,10 @@
+{"id":"p1","query":"待发货订单最晚什么时候必须交给承运商","gold_sources":["fulfillment-policy.md"],"gold_span":"ship_by"}
+{"id":"p2","query":"履约仓库存不足时可以怎么处理","gold_sources":["fulfillment-policy.md"],"gold_span":"跨仓调拨"}
+{"id":"p3","query":"物流渠道需要满足什么 SLA 条件","gold_sources":["fulfillment-policy.md"],"gold_span":"sla_eligible=true"}
+{"id":"p4","query":"未发货订单买家取消后可以退款吗","gold_sources":["fulfillment-policy.md"],"gold_span":"批准退款"}
+{"id":"p5","query":"退款金额的上限是什么","gold_sources":["fulfillment-policy.md"],"gold_span":"订单实付金额"}
+{"id":"p6","query":"库存调拨和退款是否需要保留审批记录","gold_sources":["fulfillment-policy.md"],"gold_span":"审批记录"}
+{"id":"p7","query":"平台结算差异应该怎么计算","gold_sources":["settlement-policy.md"],"gold_span":"应结金额减去实结金额"}
+{"id":"p8","query":"什么情况下可以创建结算申诉","gold_sources":["settlement-policy.md"],"gold_span":"正差异"}
+{"id":"p9","query":"结算申诉必须提供什么证据","gold_sources":["settlement-policy.md"],"gold_span":"计算证据"}
+{"id":"p10","query":"怎样避免重复提交结算申诉","gold_sources":["settlement-policy.md"],"gold_span":"idempotency_key"}

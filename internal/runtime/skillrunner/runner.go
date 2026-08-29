@@ -1,266 +1,86 @@
-// Package skillrunner 把平台固定版本的 Skill 适配到 Eino Skill Middleware。
+// Package skillrunner 把平台固定版本的 Skill 快照适配到 Eino Skill middleware。
 package skillrunner
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"strings"
-	"sync"
 
-	"github.com/cloudwego/eino/adk"
-	einoskill "github.com/cloudwego/eino/adk/middlewares/skill"
-	"github.com/cloudwego/eino/schema"
-
-	platformskill "github.com/HaojunMiao/ecommerce-ops-agent/internal/platform/skill"
-	"github.com/HaojunMiao/ecommerce-ops-agent/internal/runtime/tooling"
+	einolskill "github.com/cloudwego/eino/adk/middlewares/skill"
 )
 
-// Backend 将会话已固定的 Skill 版本适配成 Eino 的渐进式披露后端。
-// List 只暴露名称与描述（L1），Get 在选中后才返回完整指令（L2）。
-type Backend struct{ packages []platformskill.Package }
-
-func NewBackend(packages []platformskill.Package) *Backend {
-	return &Backend{packages: append([]platformskill.Package(nil), packages...)}
+// Backend 把平台快照中的 Skill Spec 适配为 Eino v0.9.15 的渐进式披露后端。
+// specs 已在会话创建时 pin 到固定版本，因此一次运行内保持不可变。
+type Backend struct {
+	specs []Spec
 }
 
-func (b *Backend) List(context.Context) ([]einoskill.FrontMatter, error) {
-	result := make([]einoskill.FrontMatter, 0, len(b.packages))
-	for _, pkg := range b.packages {
-		result = append(result, einoskill.FrontMatter{Name: pkg.Name, Description: pkg.Description})
+func NewBackend(specs []Spec) *Backend {
+	cloned := append([]Spec(nil), specs...)
+	return &Backend{specs: cloned}
+}
+
+func (b *Backend) List(context.Context) ([]einolskill.FrontMatter, error) {
+	out := make([]einolskill.FrontMatter, 0, len(b.specs))
+	for _, spec := range b.specs {
+		out = append(out, einolskill.FrontMatter{Name: spec.Name, Description: spec.Description})
 	}
-	return result, nil
+	return out, nil
 }
 
-func (b *Backend) Get(_ context.Context, name string) (einoskill.Skill, error) {
-	pkg, ok := Find(b.packages, name)
+func (b *Backend) Get(_ context.Context, name string) (einolskill.Skill, error) {
+	spec, ok := Find(b.specs, name)
 	if !ok {
-		return einoskill.Skill{}, fmt.Errorf("skill %q is not available", name)
+		return einolskill.Skill{}, fmt.Errorf("skill %q is not available", name)
 	}
-	return einoskill.Skill{
-		FrontMatter: einoskill.FrontMatter{Name: pkg.Name, Description: pkg.Description},
-		Content:     pkg.Instructions,
+	return einolskill.Skill{
+		FrontMatter: einolskill.FrontMatter{Name: spec.Name, Description: spec.Description},
+		Content:     spec.Body,
 	}, nil
 }
 
-// Runtime 汇总本次 Agent 运行需要的 Eino Middleware 和 Skill 权限策略。
-type Runtime struct {
-	Handlers     []adk.ChatModelAgentMiddleware
-	ExplicitName string
-	policy       *policy
+// Spec 是 Runtime 视角的技能（与 platform/skill.Spec 字段对应，避免跨层耦合）。
+type Spec struct {
+	VersionID              string
+	Name                   string
+	Description            string
+	Body                   string
+	AllowedTools           []string
+	AllowedKBs             []string
+	DisableModelInvocation bool
+	RequiresNetwork        bool
 }
 
-// Authorize 在工具真正执行前进行最后一道权限校验。
-func (r *Runtime) Authorize(toolName, arguments string) error {
-	if r == nil || r.policy == nil {
-		return nil
-	}
-	return r.policy.Authorize(toolName, arguments)
-}
-
-// ActiveName 返回当前已经激活的 Skill，供审批中断时一并写入检查点。
-func (r *Runtime) ActiveName() string {
-	if r == nil || r.policy == nil {
-		return ""
-	}
-	active := r.policy.Active()
-	if active == nil {
-		return ""
-	}
-	return active.Name
-}
-
-// Restore 恢复中断前激活的 Skill，使续跑后的工具权限与原运行保持一致。
-func (r *Runtime) Restore(name string) error {
-	if r == nil || r.policy == nil || name == "" {
-		return nil
-	}
-	_, err := r.policy.Activate(name)
-	return err
-}
-
-// NewRuntime 使用 Eino 官方 Skill Middleware 完成 L1 列表、skill Tool 与 L2 指令注入。
-func NewRuntime(
-	ctx context.Context,
-	packages []platformskill.Package,
-	bindings []tooling.Binding,
-	userInput string,
-	onActivate func(platformskill.Package) error,
-) (*Runtime, error) {
-	if len(packages) == 0 {
-		return nil, nil
-	}
-	explicitName, _ := DetectExplicit(userInput, packages)
-	visible := make([]platformskill.Package, 0, len(packages))
-	for _, pkg := range packages {
-		// 禁止模型自主激活的 Skill 不出现在 L1 列表，除非用户已经显式选择它。
-		if !pkg.DisableModelInvocation || pkg.Name == explicitName {
-			visible = append(visible, pkg)
-		}
-	}
-	if len(visible) == 0 {
-		return nil, nil
-	}
-	policy := newPolicy(packages, bindings)
-	handler, err := einoskill.NewMiddleware(ctx, &einoskill.Config{
-		Backend:    NewBackend(visible),
-		UseChinese: true,
-		BuildContent: func(_ context.Context, loaded einoskill.Skill, _ string) (string, error) {
-			pkg, err := policy.Activate(loaded.Name)
-			if err != nil {
-				return "", err
-			}
-			if onActivate != nil {
-				if err := onActivate(pkg); err != nil {
-					return "", err
-				}
-			}
-			return L2Message(pkg), nil
-		},
-	})
-	if err != nil {
-		return nil, fmt.Errorf("create Eino skill middleware: %w", err)
-	}
-	return &Runtime{
-		Handlers:     []adk.ChatModelAgentMiddleware{handler, &policyMiddleware{policy: policy}},
-		ExplicitName: explicitName,
-		policy:       policy,
-	}, nil
-}
-
-// policy 保存 Agent 已绑定的 Skill/工具集合，以及本次运行已激活的 Skill。
-type policy struct {
-	mu       sync.RWMutex
-	packages []platformskill.Package
-	bindings map[string]tooling.Binding
-	active   *platformskill.Package
-}
-
-func newPolicy(packages []platformskill.Package, bindings []tooling.Binding) *policy {
-	byName := make(map[string]tooling.Binding, len(bindings))
-	for _, binding := range bindings {
-		byName[binding.Name] = binding
-	}
-	return &policy{packages: packages, bindings: byName}
-}
-
-func (p *policy) Activate(name string) (platformskill.Package, error) {
-	pkg, ok := Find(p.packages, name)
-	if !ok {
-		return platformskill.Package{}, fmt.Errorf("skill %q is not pinned to this agent version", name)
-	}
-	// 激活前先检查 Skill 宣称依赖的工具确实已固定在当前 Agent 版本中。
-	for _, toolName := range pkg.AllowedTools {
-		binding, exists := p.bindings[toolName]
-		if !exists {
-			return platformskill.Package{}, fmt.Errorf("skill requires unavailable tool %q", toolName)
-		}
-		if binding.RequiresNetwork && !pkg.RequiresNetwork {
-			return platformskill.Package{}, fmt.Errorf("skill must declare requires_network for tool %q", toolName)
-		}
-	}
-	copyOfPackage := pkg
-	p.mu.Lock()
-	p.active = &copyOfPackage
-	p.mu.Unlock()
-	return pkg, nil
-}
-
-func (p *policy) Active() *platformskill.Package {
-	p.mu.RLock()
-	defer p.mu.RUnlock()
-	if p.active == nil {
-		return nil
-	}
-	copyOfPackage := *p.active
-	return &copyOfPackage
-}
-
-// Authorize 防止模型绕过工具列表过滤：每次工具执行前再检查工具名和 kb_id。
-func (p *policy) Authorize(toolName, arguments string) error {
-	if toolName == "skill" {
-		return nil
-	}
-	active := p.Active()
-	if active == nil {
-		return nil
-	}
-	if !contains(active.AllowedTools, toolName) {
-		return fmt.Errorf("tool %q is not allowed by active skill %q", toolName, active.Name)
-	}
-	binding := p.bindings[toolName]
-	if !binding.KBScoped {
-		return nil
-	}
-	var input struct {
-		KBID string `json:"kb_id"`
-	}
-	if err := json.Unmarshal([]byte(arguments), &input); err != nil || input.KBID == "" {
-		return fmt.Errorf("tool %q requires a valid kb_id", toolName)
-	}
-	if !contains(active.AllowedKBs, input.KBID) {
-		return fmt.Errorf("knowledge base %q is not allowed by active skill %q", input.KBID, active.Name)
-	}
-	return nil
-}
-
-// policyMiddleware 在每次调模型前收窄可见工具列表。
-type policyMiddleware struct {
-	*adk.BaseChatModelAgentMiddleware
-	policy *policy
-}
-
-func (h *policyMiddleware) BeforeModelRewriteState(
-	ctx context.Context, state *adk.ChatModelAgentState, _ *adk.ModelContext,
-) (context.Context, *adk.ChatModelAgentState, error) {
-	active := h.policy.Active()
-	if active == nil {
-		return ctx, state, nil
-	}
-	filtered := make([]*schema.ToolInfo, 0, len(state.ToolInfos))
-	for _, info := range state.ToolInfos {
-		if contains(active.AllowedTools, info.Name) {
-			filtered = append(filtered, info)
-		}
-	}
-	state.ToolInfos = filtered
-	return ctx, state, nil
-}
-
-// DetectExplicit 识别“/skill name”或“/name”形式的用户显式选择。
-func DetectExplicit(text string, packages []platformskill.Package) (string, bool) {
+// DetectExplicit 识别用户显式调用：`/skill name` 或 `/name`。
+// 这为 disable-model-invocation 提供可操作的人工入口。
+func DetectExplicit(text string, specs []Spec) (name string, ok bool) {
 	fields := strings.Fields(strings.TrimSpace(text))
 	if len(fields) == 0 {
 		return "", false
 	}
-	name := ""
 	if fields[0] == "/skill" && len(fields) >= 2 {
 		name = fields[1]
 	} else if strings.HasPrefix(fields[0], "/") {
 		name = strings.TrimPrefix(fields[0], "/")
 	}
-	_, ok := Find(packages, name)
+	if name == "" {
+		return "", false
+	}
+	_, ok = Find(specs, name)
 	return name, ok
 }
 
-func L2Message(pkg platformskill.Package) string {
-	return "[激活技能 " + pkg.Name + "]\n\n" + pkg.Instructions
+// L2Message 返回某技能 L2 注入用的 system 消息内容（body 作为新的 system 上下文）。
+func L2Message(spec Spec) string {
+	return "[激活技能 " + spec.Name + "]\n\n" + spec.Body
 }
 
-func Find(packages []platformskill.Package, name string) (platformskill.Package, bool) {
-	for _, pkg := range packages {
-		if pkg.Name == name {
-			return pkg, true
+// Find 在 specs 里按名查找技能。
+func Find(specs []Spec, name string) (Spec, bool) {
+	for _, sp := range specs {
+		if sp.Name == name {
+			return sp, true
 		}
 	}
-	return platformskill.Package{}, false
-}
-
-func contains(values []string, target string) bool {
-	for _, value := range values {
-		if value == target {
-			return true
-		}
-	}
-	return false
+	return Spec{}, false
 }
