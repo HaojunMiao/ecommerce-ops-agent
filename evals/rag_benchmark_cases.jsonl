@@ -1,0 +1,48 @@
+{"id": "us_fulfillment_1", "category": "semantic", "query": "US站现货订单支付后多久必须交给承运商", "gold_docs": ["us_fulfillment_current"], "gold_span": "支付后8小时内完成承运商交接"}
+{"id": "us_fulfillment_2", "category": "semantic", "query": "US站高峰期履约窗口最多能延长到多久", "gold_docs": ["us_fulfillment_current"], "gold_span": "最多延长至12小时"}
+{"id": "us_fulfillment_3", "category": "exact", "query": "US站申请高峰延期要填写哪个原因码", "gold_docs": ["us_fulfillment_current"], "gold_span": "SLA-DELAY-12H"}
+{"id": "eu_returns_1", "category": "semantic", "query": "EU站普通商品签收后多少天内可以退货", "gold_docs": ["eu_returns_current"], "gold_span": "签收后30个自然日"}
+{"id": "eu_returns_2", "category": "semantic", "query": "EU站破损商品最晚多久提交证据", "gold_docs": ["eu_returns_current"], "gold_span": "签收后48小时内提交"}
+{"id": "eu_returns_3", "category": "exact", "query": "EU站当前退货规则代码是什么", "gold_docs": ["eu_returns_current"], "gold_span": "EU-RET-30"}
+{"id": "refund_control_1", "category": "semantic", "query": "退款金额上限应该按实付金额还是吊牌价", "gold_docs": ["refund_control_current"], "gold_span": "以订单实付金额为上限"}
+{"id": "refund_control_2", "category": "semantic", "query": "订单部分发货后应该怎么退款", "gold_docs": ["refund_control_current"], "gold_span": "只退未发货行的分摊金额"}
+{"id": "refund_control_3", "category": "exact", "query": "退款接口的稳定幂等键格式是什么", "gold_docs": ["refund_control_current"], "gold_span": "refund:{order_id}:{amount}"}
+{"id": "settlement_claim_1", "category": "semantic", "query": "当前结算差异应该怎么计算", "gold_docs": ["settlement_claim_current"], "gold_span": "expected_amount - paid_amount"}
+{"id": "settlement_claim_2", "category": "semantic", "query": "什么样的结算差异可以自动申诉", "gold_docs": ["settlement_claim_current"], "gold_span": "仅正差异允许自动创建申诉"}
+{"id": "settlement_claim_3", "category": "exact", "query": "STMT-2026-31当前应申诉的差异金额是多少", "gold_docs": ["settlement_claim_current"], "gold_span": "STMT-2026-31的差异为11.52 USD"}
+{"id": "inventory_reservation_1", "category": "semantic", "query": "调拨库存预占多久会释放", "gold_docs": ["inventory_reservation_current"], "gold_span": "调拨预占保留24小时"}
+{"id": "inventory_reservation_2", "category": "semantic", "query": "库存Available是否已经扣除了预占和冻结", "gold_docs": ["inventory_reservation_current"], "gold_span": "Available已经扣除预占和冻结"}
+{"id": "inventory_reservation_3", "category": "exact", "query": "能否把其他仓库存加到当前履约仓可用量里", "gold_docs": ["inventory_reservation_current"], "gold_span": "不同仓库可用量不得合并冒充履约仓库存"}
+{"id": "remote_shipping_1", "category": "semantic", "query": "阿拉斯加地址当前默认配送时效是多少", "gold_docs": ["remote_shipping_current"], "gold_span": "默认配送时效为12至18日"}
+{"id": "remote_shipping_2", "category": "semantic", "query": "偏远地址1公斤包裹收多少附加费", "gold_docs": ["remote_shipping_current"], "gold_span": "0.5至2kg收取11.0 USD"}
+{"id": "remote_shipping_3", "category": "exact", "query": "PO Box地址应优先选择哪个物流渠道", "gold_docs": ["remote_shipping_current"], "gold_span": "4PX Remote Saver"}
+{"id": "chargeback_evidence_1", "category": "semantic", "query": "收到拒付通知后几天内必须提交证据", "gold_docs": ["chargeback_evidence_current"], "gold_span": "收到拒付通知后7个自然日内"}
+{"id": "chargeback_evidence_2", "category": "semantic", "query": "拒付申诉至少要提供哪些证据", "gold_docs": ["chargeback_evidence_current"], "gold_span": "必须包含物流签收证明和订单沟通记录"}
+{"id": "chargeback_evidence_3", "category": "exact", "query": "拒付案件使用什么幂等键", "gold_docs": ["chargeback_evidence_current"], "gold_span": "chargeback:{case_id}"}
+{"id": "eu_ior_customs_1", "category": "semantic", "query": "EU包裹货值多少以内适用IOSS", "gold_docs": ["eu_ior_customs_current"], "gold_span": "货值不超过150 EUR时使用IOSS"}
+{"id": "eu_ior_customs_2", "category": "semantic", "query": "使用IOSS时电子报关要带什么信息", "gold_docs": ["eu_ior_customs_current"], "gold_span": "电子报关必须携带平台IOSS号码"}
+{"id": "eu_ior_customs_3", "category": "exact", "query": "EU包裹超过IOSS阈值后怎么申报", "gold_docs": ["eu_ior_customs_current"], "gold_span": "超过150 EUR改走普通进口申报"}
+{"id": "preorder_policy_1", "category": "semantic", "query": "预售订单当前最长可以备货多少天", "gold_docs": ["preorder_policy_current"], "gold_span": "最长备货周期为14个自然日"}
+{"id": "preorder_policy_2", "category": "semantic", "query": "预售订单超过承诺发货日后买家能否取消", "gold_docs": ["preorder_policy_current"], "gold_span": "超过承诺日仍未发货必须允许无责取消"}
+{"id": "preorder_policy_3", "category": "exact", "query": "预售超期取消使用哪个状态代码", "gold_docs": ["preorder_policy_current"], "gold_span": "PREORDER-LATE-CANCEL"}
+{"id": "battery_shipping_1", "category": "semantic", "query": "设备内置锂电池外箱应标哪个UN编号", "gold_docs": ["battery_shipping_current"], "gold_span": "外箱必须标记UN3481"}
+{"id": "battery_shipping_2", "category": "semantic", "query": "含锂电设备一箱最多放几台", "gold_docs": ["battery_shipping_current"], "gold_span": "单箱最多放置2台设备"}
+{"id": "battery_shipping_3", "category": "exact", "query": "含锂电商品能否走无危险品资质的航空渠道", "gold_docs": ["battery_shipping_current"], "gold_span": "禁止使用无危险品资质的航空渠道"}
+{"id": "warehouse_transfer_1", "category": "semantic", "query": "跨仓调拨数量应该按什么口径确定", "gold_docs": ["warehouse_transfer_current"], "gold_span": "调拨数量必须等于库存缺口"}
+{"id": "warehouse_transfer_2", "category": "semantic", "query": "多久内能到的在途补货应优先等待", "gold_docs": ["warehouse_transfer_current"], "gold_span": "4小时内有在途补货时优先等待补货"}
+{"id": "warehouse_transfer_3", "category": "exact", "query": "跨仓调拨是否必须经过人工审批", "gold_docs": ["warehouse_transfer_current"], "gold_span": "真实调拨必须经过人工审批"}
+{"id": "seller_health_1", "category": "semantic", "query": "US站卖家当前迟发率阈值是多少", "gold_docs": ["seller_health_current"], "gold_span": "迟发率必须低于4%"}
+{"id": "seller_health_2", "category": "semantic", "query": "US站卖家责任取消率上限是多少", "gold_docs": ["seller_health_current"], "gold_span": "卖家责任取消率必须低于2%"}
+{"id": "seller_health_3", "category": "exact", "query": "卖家履约健康度按多长周期滚动观察", "gold_docs": ["seller_health_current"], "gold_span": "连续4周滚动观察"}
+{"id": "fx_settlement_1", "category": "semantic", "query": "EUR订单结算当前采用哪个时间点的汇率", "gold_docs": ["fx_settlement_current"], "gold_span": "使用ECB工作日16:00 UTC参考汇率"}
+{"id": "fx_settlement_2", "category": "semantic", "query": "跨币种订单在哪一天锁定结算汇率", "gold_docs": ["fx_settlement_current"], "gold_span": "以订单结算日锁定汇率"}
+{"id": "fx_settlement_3", "category": "exact", "query": "汇率换算中间结果保留几位小数", "gold_docs": ["fx_settlement_current"], "gold_span": "中间计算保留4位小数"}
+{"id": "shipping_label_1", "category": "semantic", "query": "平台预付费面单生成后有效多久", "gold_docs": ["shipping_label_current"], "gold_span": "面单生成后72小时有效"}
+{"id": "shipping_label_2", "category": "semantic", "query": "重新打印物流面单后旧面单还能用吗", "gold_docs": ["shipping_label_current"], "gold_span": "重新打印会立即作废旧面单"}
+{"id": "shipping_label_3", "category": "exact", "query": "同一个运单号可以重复做揽收扫描吗", "gold_docs": ["shipping_label_current"], "gold_span": "同一运单号只允许首次揽收扫描生效"}
+{"id": "damaged_return_1", "category": "semantic", "query": "运输破损售后至少需要几张照片", "gold_docs": ["damaged_return_current"], "gold_span": "至少提交3张不同角度照片"}
+{"id": "damaged_return_2", "category": "semantic", "query": "运输破损最晚在签收后多久发起", "gold_docs": ["damaged_return_current"], "gold_span": "签收后48小时内发起"}
+{"id": "damaged_return_3", "category": "exact", "query": "破损商品多少钱以内可以审核免退退款", "gold_docs": ["damaged_return_current"], "gold_span": "商品实付不超过20 USD可审核免退退款"}
+{"id": "platform_commission_1", "category": "semantic", "query": "US站普通类目当前标准佣金率是多少", "gold_docs": ["platform_commission_current"], "gold_span": "标准佣金率为6.5%"}
+{"id": "platform_commission_2", "category": "semantic", "query": "平台佣金计算是否包含销售税", "gold_docs": ["platform_commission_current"], "gold_span": "佣金基数不包含销售税"}
+{"id": "platform_commission_3", "category": "exact", "query": "审核通过的活动订单佣金率是多少", "gold_docs": ["platform_commission_current"], "gold_span": "活动期审核通过后费率为4.8%"}

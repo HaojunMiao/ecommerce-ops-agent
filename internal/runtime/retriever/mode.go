@@ -89,7 +89,7 @@ func (r *PgvectorRetriever) bm25Only(ctx context.Context, kbID, query string, k 
 		WHERE c.kb_id = $2 AND base.status = 'active' AND base.embedding_model = $4
 		  AND d.status = 'processed' AND d.embedding_identity = $4
 		  AND c.embedding_identity = $4 AND c.tsv @@ websearch_to_tsquery('simple', $1)
-		ORDER BY score DESC
+		ORDER BY score DESC, d.hash, c.ordinal, c.id
 		LIMIT $3`, keywordQuery, kbUUID, k, r.embedder.Identity())
 	if err != nil {
 		return nil, fmt.Errorf("keyword query: %w", err)
@@ -109,7 +109,12 @@ func (r *PgvectorRetriever) vectorOnly(ctx context.Context, kbID, query string, 
 	}
 	qvec := vectorLiteral(embs[0])
 	// 余弦距离越小越相似,转成 1-distance 当分数。
-	rows, err := r.db.Query(ctx, `
+	tx, err := r.beginVectorSearch(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	rows, err := tx.Query(ctx, `
 		SELECT c.id::text, c.doc_id::text, c.content, (1 - (c.embedding <=> $1::halfvec)) AS score
 		FROM kb_chunks c
 		JOIN kb_documents d ON d.id = c.doc_id
@@ -122,8 +127,15 @@ func (r *PgvectorRetriever) vectorOnly(ctx context.Context, kbID, query string, 
 	if err != nil {
 		return nil, fmt.Errorf("vector query: %w", err)
 	}
-	defer rows.Close()
-	return scanPassages(rows)
+	out, err := scanPassages(rows)
+	rows.Close()
+	if err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, fmt.Errorf("commit vector search: %w", err)
+	}
+	return out, nil
 }
 
 // scanPassages 把 (chunk_id, doc_id, content, score) 行集扫成 Passage 列表。

@@ -63,9 +63,21 @@ make crossborder-e2e
 ```bash
 make rag-eval
 make rag-eval-production
+make rag-benchmark
+make rag-benchmark-up
+make rag-benchmark-production
+make rag-benchmark-down
+make rag-long-benchmark
+make rag-long-benchmark-up
+make rag-long-benchmark-production
+make rag-long-benchmark-down
 go run ./evals/run_agent_eval.go
 ```
 
 `rag-eval` 是 Python 算法消融实验，用于快速比较切片、分词和 RRF 参数；它使用真实向量模型，但关键词评分不是生产 PostgreSQL 链路，因此不能把混合检索指标直接当作线上效果。
 
 `rag-eval-production` 要求平台与电商演示数据已经启动并完成入库。它通过真实 HTTP API 调用 Go 服务，覆盖生产使用的 GSE 分词、PostgreSQL `ts_rank_cd`、真实向量模型和 RRF 融合。两类评测均输出 Recall@K、MRR、NDCG 等指标到 `evals/results/`；Agent 评测覆盖工具选择、参数、审批合规、禁止工具、任务完成和幂等性。
+
+`rag-benchmark` 是早期短文档基线，只用于回归评测脚本；不要再用它做切片和检索选型。最终实验使用 `rag-long-benchmark`：生成 48/152/168 篇长文档和 64 条独立问句，按业务主题隔离 dev/test，覆盖 BM25、向量、混合检索、切片、边界答案、Top-K 和生命周期消融。
+
+`rag-long-benchmark-up` 使用独立端口 `8182/55432/16379` 启动真实链路，随后运行 `rag-long-benchmark-production`；结束后用 `rag-long-benchmark-down` 停止容器并保留数据卷。完整方法、指标解释与最终结论见 `docs/rag-evaluation-report.md`。

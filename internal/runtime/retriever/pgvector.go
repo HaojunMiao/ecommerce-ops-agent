@@ -46,6 +46,34 @@ func NewPgvectorRetriever(db *pgxpool.Pool, embedder Embedder) *PgvectorRetrieve
 	return &PgvectorRetriever{db: db, embedder: embedder, rrfK: 60}
 }
 
+// beginVectorSearch 为带 kb_id 等过滤条件的 HNSW 查询开启迭代扫描。
+// 默认 HNSW 先取全局近邻再应用过滤；多个 KB 共用索引时可能因候选均属于
+// 其他 KB 而少返回甚至返回空。strict_order 会继续扫描直到过滤后结果足够。
+func (r *PgvectorRetriever) beginVectorSearch(ctx context.Context) (pgx.Tx, error) {
+	tx, err := r.db.Begin(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("begin vector search: %w", err)
+	}
+	if _, err := tx.Exec(ctx, `SET LOCAL hnsw.iterative_scan = strict_order`); err != nil {
+		_ = tx.Rollback(ctx)
+		return nil, fmt.Errorf("enable filtered hnsw iterative scan: %w", err)
+	}
+	// 多个 KB 中存在相同或近重复文档时，默认 40 个入口候选和较小扫描
+	// 内存仍可能在命中目标 KB 前停止。提高过滤查询的探索与扫描上限；设置
+	// 仅在当前只读事务内生效，不影响写入和其他连接。
+	for _, setting := range []string{
+		`SET LOCAL hnsw.ef_search = 200`,
+		`SET LOCAL hnsw.max_scan_tuples = 100000`,
+		`SET LOCAL hnsw.scan_mem_multiplier = 4`,
+	} {
+		if _, err := tx.Exec(ctx, setting); err != nil {
+			_ = tx.Rollback(ctx)
+			return nil, fmt.Errorf("configure filtered hnsw scan: %w", err)
+		}
+	}
+	return tx, nil
+}
+
 // Embedder 暴露嵌入器,供 ingest 的 embed 阶段复用同一实现。
 func (r *PgvectorRetriever) Embedder() Embedder { return r.embedder }
 
@@ -177,9 +205,18 @@ func (r *PgvectorRetriever) Search(ctx context.Context, kbID, query string, topK
 	qvec := vectorLiteral(embs[0])
 	keywordQuery := lexicalQuery(query)
 
-	rows, err := r.db.Query(ctx, `
+	tx, err := r.beginVectorSearch(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	rows, err := tx.Query(ctx, `
 		WITH keyword AS (
-			SELECT c.id, ROW_NUMBER() OVER (ORDER BY ts_rank_cd(c.tsv, websearch_to_tsquery('simple', $1)) DESC) AS rk
+			SELECT c.id, ROW_NUMBER() OVER (
+				ORDER BY ts_rank_cd(c.tsv, websearch_to_tsquery('simple', $1)) DESC,
+					d.hash, c.ordinal, c.id
+			) AS rk
 			FROM kb_chunks c
 			JOIN kb_documents d ON d.id = c.doc_id
 			JOIN kbs k ON k.id = c.kb_id
@@ -187,7 +224,8 @@ func (r *PgvectorRetriever) Search(ctx context.Context, kbID, query string, topK
 			  AND k.embedding_model = $6 AND d.status = 'processed'
 			  AND d.embedding_identity = $6 AND c.embedding_identity = $6
 			  AND c.tsv @@ websearch_to_tsquery('simple', $1)
-			ORDER BY ts_rank_cd(c.tsv, websearch_to_tsquery('simple', $1)) DESC, c.id
+			ORDER BY ts_rank_cd(c.tsv, websearch_to_tsquery('simple', $1)) DESC,
+				d.hash, c.ordinal, c.id
 			LIMIT 50
 		),
 		vec AS (
@@ -201,31 +239,36 @@ func (r *PgvectorRetriever) Search(ctx context.Context, kbID, query string, topK
 			ORDER BY c.embedding <=> $3::halfvec
 			LIMIT 50
 		),
-		merged AS (
+		fused AS (
 			SELECT id, SUM(1.0 / ($4::float + rk)) AS rrf_score
 			FROM (SELECT id, rk FROM keyword UNION ALL SELECT id, rk FROM vec) u
 			GROUP BY id
-			ORDER BY rrf_score DESC
+		),
+		merged AS (
+			SELECT f.id, f.rrf_score
+			FROM fused f
+			JOIN kb_chunks c ON c.id = f.id
+			JOIN kb_documents d ON d.id = c.doc_id
+			ORDER BY f.rrf_score DESC, d.hash, c.ordinal, c.id
 			LIMIT $5
 		)
 		SELECT c.id::text, c.doc_id::text, c.content, m.rrf_score
 		FROM merged m JOIN kb_chunks c ON c.id = m.id
-		ORDER BY m.rrf_score DESC`,
+		JOIN kb_documents d ON d.id = c.doc_id
+		ORDER BY m.rrf_score DESC, d.hash, c.ordinal, c.id`,
 		keywordQuery, kbUUID, qvec, r.rrfK, topK, r.embedder.Identity())
 	if err != nil {
 		return nil, fmt.Errorf("rrf query: %w", err)
 	}
-	defer rows.Close()
-
-	var out []Passage
-	for rows.Next() {
-		var p Passage
-		if err := rows.Scan(&p.ChunkID, &p.DocID, &p.Text, &p.Score); err != nil {
-			return nil, fmt.Errorf("scan chunk: %w", err)
-		}
-		out = append(out, p)
+	out, err := scanPassages(rows)
+	rows.Close()
+	if err != nil {
+		return nil, err
 	}
-	return out, rows.Err()
+	if err := tx.Commit(ctx); err != nil {
+		return nil, fmt.Errorf("commit vector search: %w", err)
+	}
+	return out, nil
 }
 
 // vectorLiteral 把 []float32 编码成 pgvector 文本字面量 "[v1,v2,...]",配合 $n::halfvec 入库/检索,

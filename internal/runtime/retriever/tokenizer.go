@@ -66,6 +66,12 @@ func tokenize(text string) []string {
 	return normalizeTokens(raw)
 }
 
+// LexicalTokens 暴露生产关键词检索使用的标准化词元，供离线评测和诊断工具复用。
+// 返回副本，调用方不能修改分词器内部状态。
+func LexicalTokens(text string) []string {
+	return append([]string(nil), tokenize(text)...)
+}
+
 func normalizeTokens(raw []string) []string {
 	tokens := make([]string, 0, len(raw))
 	for _, item := range raw {

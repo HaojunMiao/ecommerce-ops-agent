@@ -334,14 +334,7 @@ def nrunes(s: str) -> int:
 
 
 def chunk_fixed(text: str, size: int, overlap: int) -> list[str]:
-    """Character-budget chunker matching chunk.go comments (rune length).
-
-    Production packing actually uses UTF-8 byte length via strings.Builder.Len,
-    then hard-splits with cutRunes. On CJK, byte budget fires early and
-    cutRunes(size) may return the whole buffer, so overlap can recreate the
-    same string and loop forever when size is small (e.g. 150). This eval uses
-    rune length so size/overlap mean what the comments claim.
-    """
+    """Character-budget chunker matching production's UTF-8 rune semantics."""
     if size <= 0:
         size = 500
     if overlap < 0 or overlap >= size:
@@ -470,7 +463,12 @@ TOKENIZERS = {
 
 
 def cosine(a: list[float], b: list[float]) -> float:
-    return sum(x * y for x, y in zip(a, b))
+    dot = sum(x * y for x, y in zip(a, b))
+    norm_a = math.sqrt(sum(x * x for x in a))
+    norm_b = math.sqrt(sum(x * x for x in b))
+    if norm_a == 0 or norm_b == 0:
+        return 0.0
+    return dot / (norm_a * norm_b)
 
 
 @dataclass

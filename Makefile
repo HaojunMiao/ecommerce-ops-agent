@@ -6,6 +6,10 @@ LITE_COMPOSE := docker compose -p ecommerce-ops-lite -f deploy/docker-compose.ym
 LANGFUSE_COMPOSE := docker compose -p ecommerce-ops-agent -f deploy/docker-compose.yml -f deploy/docker-compose.langfuse.yml --env-file .env
 CROSSBORDER_COMPOSE := docker compose -p ecommerce-ops-crossborder -f deploy/docker-compose.yml -f projects/crossborder/platform-compose.yml --env-file .env --env-file projects/crossborder/compose.env
 PLATFORM_URL ?= http://localhost:8080
+RAG_BENCHMARK_URL ?= http://localhost:8182
+RAG_BENCHMARK_HTTP_PORT ?= 8182
+RAG_BENCHMARK_POSTGRES_PORT ?= 55432
+RAG_BENCHMARK_REDIS_PORT ?= 16379
 CROSSBORDER_ISOLATED_URL ?= http://localhost:8181
 CROSSBORDER_ADMIN_EMAIL ?= admin@ecommerce-ops.local
 CROSSBORDER_KBOT_PASSWORD ?= admin12345
@@ -13,6 +17,8 @@ CROSSBORDER_KBOT_PASSWORD ?= admin12345
 .PHONY: help bootstrap configure-embedding up down logs ps up-lite down-lite logs-lite ps-lite seed seed-lite migrate migrate-lite \
 		bootstrap-model-config bootstrap-model-config-lite crossborder-bootstrap-model-config sqlc-generate openapi test-integration \
 		rag-eval rag-eval-production \
+		rag-benchmark-build rag-benchmark rag-benchmark-up rag-benchmark-production rag-benchmark-down \
+		rag-long-benchmark-build rag-long-benchmark rag-long-benchmark-up rag-long-benchmark-production rag-long-benchmark-down \
 		crossborder-build crossborder-test crossborder-up crossborder-install crossborder-install-isolated \
 		crossborder-model-smoke crossborder-model-smoke-isolated crossborder-e2e crossborder-e2e-isolated crossborder-logs crossborder-down \
         langfuse-preflight langfuse-up langfuse-demo langfuse-ps langfuse-logs langfuse-down langfuse-reset
@@ -153,6 +159,35 @@ rag-eval: ## 算法消融：比较切片、分词、召回与 RRF 参数（不�
 
 rag-eval-production: ## 生产链路：通过 HTTP 评测 Go/GSE/PostgreSQL/真实向量模型
 	python3 evals/run_rag_production_eval.py
+
+rag-benchmark-build: ## 生成受控业务语料、困难负样本和背景噪声
+	python3 evals/build_rag_benchmark.py
+
+rag-benchmark: rag-benchmark-build ## 扩展算法评测：BM25/Vector/Hybrid、切片、Top-K、噪声、GSE、RRF
+	python3 evals/run_rag_benchmark.py
+
+rag-benchmark-up: rag-benchmark-build ## 启动挂载扩展评测语料的轻量环境
+	KBOT_HTTP_PORT=$(RAG_BENCHMARK_HTTP_PORT) KBOT_POSTGRES_PORT=$(RAG_BENCHMARK_POSTGRES_PORT) KBOT_REDIS_PORT=$(RAG_BENCHMARK_REDIS_PORT) docker compose -p ecommerce-ops-rag-benchmark -f deploy/docker-compose.yml -f evals/rag-benchmark.compose.yml --env-file .env up --build -d
+
+rag-benchmark-production: ## 扩展生产链路评测：真实 Go/GSE/PostgreSQL/pgvector/Qwen
+	KBOT_URL=$(RAG_BENCHMARK_URL) python3 evals/run_rag_production_benchmark.py
+
+rag-benchmark-down: ## 停止扩展评测环境并保留数据
+	KBOT_HTTP_PORT=$(RAG_BENCHMARK_HTTP_PORT) KBOT_POSTGRES_PORT=$(RAG_BENCHMARK_POSTGRES_PORT) KBOT_REDIS_PORT=$(RAG_BENCHMARK_REDIS_PORT) docker compose -p ecommerce-ops-rag-benchmark -f deploy/docker-compose.yml -f evals/rag-benchmark.compose.yml --env-file .env down
+
+rag-long-benchmark-build: ## 生成独立查询、长文档和边界测试语料
+	python3 evals/build_rag_long_benchmark.py
+
+rag-long-benchmark: rag-long-benchmark-build ## 长文档消融：独立查询、dev/test、Precision、切片和边界召回
+	python3 evals/run_rag_long_benchmark.py
+
+rag-long-benchmark-up: rag-benchmark-build rag-long-benchmark-build ## 启动挂载长文档评测语料的独立环境
+	KBOT_HTTP_PORT=$(RAG_BENCHMARK_HTTP_PORT) KBOT_POSTGRES_PORT=$(RAG_BENCHMARK_POSTGRES_PORT) KBOT_REDIS_PORT=$(RAG_BENCHMARK_REDIS_PORT) docker compose -p ecommerce-ops-rag-benchmark -f deploy/docker-compose.yml -f evals/rag-benchmark.compose.yml --env-file .env up --build -d
+
+rag-long-benchmark-production: ## 用当前生产500/100切片运行长文档真实链路评测
+	KBOT_URL=$(RAG_BENCHMARK_URL) RAG_BENCHMARK_WORKSPACE=RAG长文档评测 RAG_BENCHMARK_SUBSETS=core,active120,noise120 RAG_BENCHMARK_CORPUS_DIR=evals/corpus/rag-long-benchmark RAG_BENCHMARK_CONTAINER_ROOT=/scenarios/rag-long-benchmark RAG_BENCHMARK_CASES=evals/rag_long_benchmark_cases.jsonl RAG_BENCHMARK_OUTPUT=evals/results/rag_long_benchmark_production_results.json RAG_BENCHMARK_KB_PREFIX=RAG长文档评测 python3 evals/run_rag_production_benchmark.py
+
+rag-long-benchmark-down: rag-benchmark-down ## 停止长文档评测环境并保留数据
 
 # ===== Langfuse 可观测环境 =====
 
