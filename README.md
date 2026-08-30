@@ -6,8 +6,6 @@
 
 ## 模型配置初始化
 
-运行时只接受 `ModelConfigVersion -> PromptVersion -> AgentVersion -> Conversation` 这一条不可变引用链，不存在 `.env` 全局模型回退。`.env` 仅提供 `credential_ref` 所引用的密钥。
-
 开发环境可由 admin autoseed 初始化默认版本；生产或关闭 autoseed 时，在 Workspace 建立后显式执行：
 
 ```bash
