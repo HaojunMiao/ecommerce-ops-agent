@@ -10,7 +10,7 @@ import (
 
 // 检索模式用于 Admin Console 的关键词、向量与混合检索对比。
 const (
-	ModeBM25   = "bm25"   // 兼容既有 API 名称；持久化实现是 PostgreSQL 全文关键词检索
+	ModeBM25   = "bm25"   // PostgreSQL pg_search BM25 关键词检索
 	ModeVector = "vector" // 纯向量(余弦)
 	ModeHybrid = "hybrid" // 关键词 + 向量 + RRF,即默认 Search
 )
@@ -82,13 +82,14 @@ func (r *PgvectorRetriever) bm25Only(ctx context.Context, kbID, query string, k 
 		return nil, nil
 	}
 	rows, err := r.db.Query(ctx, `
-		SELECT c.id::text, c.doc_id::text, c.content, ts_rank_cd(c.tsv, websearch_to_tsquery('simple', $1)) AS score
+		SELECT c.id::text, c.doc_id::text, c.content, pdb.score(c.id)::float8 AS score
 		FROM kb_chunks c
 		JOIN kb_documents d ON d.id = c.doc_id
 		JOIN kbs base ON base.id = c.kb_id
 		WHERE c.kb_id = $2 AND base.status = 'active' AND base.embedding_model = $4
 		  AND d.status = 'processed' AND d.embedding_identity = $4
-		  AND c.embedding_identity = $4 AND c.tsv @@ websearch_to_tsquery('simple', $1)
+		  AND c.embedding_identity = $4
+		  AND (c.search_text::pdb.whitespace('alias=search_text')) ||| $1
 		ORDER BY score DESC, d.hash, c.ordinal, c.id
 		LIMIT $3`, keywordQuery, kbUUID, k, r.embedder.Identity())
 	if err != nil {

@@ -1,0 +1,29 @@
+FROM pgvector/pgvector:pg16@sha256:00ba258a66dac104fd5171074a0084462a64a1369d8513f3d0a634e2f24d15bc
+
+# pg_search is installed on top of the existing pgvector image instead of
+# replacing the whole database distribution. This keeps PostgreSQL, pgvector,
+# the entrypoint and the data-volume layout identical to the previous image.
+ARG TARGETARCH
+ARG PG_SEARCH_VERSION=0.25.0
+
+RUN set -eux; \
+    case "${TARGETARCH}" in \
+        amd64) pg_search_sha256="0d8171deded145780fa8022564c4131505f1c51084335cb4bcf2d27a4877e79b" ;; \
+        arm64) pg_search_sha256="5eccce01a4cb4e03438f71b984ac3f1817d47c95211f13e7c15a6ec3279364c2" ;; \
+        *) echo "unsupported architecture: ${TARGETARCH}" >&2; exit 1 ;; \
+    esac; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends ca-certificates curl; \
+    curl -fsSL \
+        -o /tmp/pg_search.deb \
+        "https://github.com/paradedb/paradedb/releases/download/v${PG_SEARCH_VERSION}/postgresql-16-pg-search_${PG_SEARCH_VERSION}-1PARADEDB-bookworm_${TARGETARCH}.deb"; \
+    echo "${pg_search_sha256}  /tmp/pg_search.deb" | sha256sum -c -; \
+    apt-get install -y --no-install-recommends /tmp/pg_search.deb; \
+    rm -f /tmp/pg_search.deb; \
+    rm -rf /var/lib/apt/lists/*
+
+# Fresh volumes inherit this setting. docker-compose and integration tests also
+# pass it explicitly so pre-existing volumes preload pg_search after restart.
+RUN sed -ri \
+    "s/^#?shared_preload_libraries[[:space:]]*=.*/shared_preload_libraries = 'pg_search'/" \
+    /usr/share/postgresql/postgresql.conf.sample

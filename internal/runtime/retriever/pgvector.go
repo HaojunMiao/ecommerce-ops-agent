@@ -33,8 +33,8 @@ type VersionedIndexer interface {
 var _ Searcher = (*Retriever)(nil)         // 内存版
 var _ Searcher = (*PgvectorRetriever)(nil) // PG 版
 
-// PgvectorRetriever 把 chunk 落 kb_chunks(embedding halfvec + 中文分词 tsv),检索在 SQL 里做
-// 全文关键词 + 向量(<=> 余弦) + RRF(k=60) 合并。跨进程闭环:worker ingest 写库,server 检索读库。
+// PgvectorRetriever 把 chunk 落 kb_chunks(embedding halfvec + GSE 分词文本),检索在 SQL 里做
+// BM25 关键词 + 向量(<=> 余弦) + RRF(k=60) 合并。跨进程闭环:worker ingest 写库,server 检索读库。
 type PgvectorRetriever struct {
 	db       *pgxpool.Pool
 	embedder Embedder
@@ -214,7 +214,7 @@ func (r *PgvectorRetriever) Search(ctx context.Context, kbID, query string, topK
 	rows, err := tx.Query(ctx, `
 		WITH keyword AS (
 			SELECT c.id, ROW_NUMBER() OVER (
-				ORDER BY ts_rank_cd(c.tsv, websearch_to_tsquery('simple', $1)) DESC,
+				ORDER BY pdb.score(c.id) DESC,
 					d.hash, c.ordinal, c.id
 			) AS rk
 			FROM kb_chunks c
@@ -223,8 +223,8 @@ func (r *PgvectorRetriever) Search(ctx context.Context, kbID, query string, topK
 			WHERE $1 <> '' AND c.kb_id = $2 AND k.status = 'active'
 			  AND k.embedding_model = $6 AND d.status = 'processed'
 			  AND d.embedding_identity = $6 AND c.embedding_identity = $6
-			  AND c.tsv @@ websearch_to_tsquery('simple', $1)
-			ORDER BY ts_rank_cd(c.tsv, websearch_to_tsquery('simple', $1)) DESC,
+			  AND (c.search_text::pdb.whitespace('alias=search_text')) ||| $1
+			ORDER BY pdb.score(c.id) DESC,
 				d.hash, c.ordinal, c.id
 			LIMIT 50
 		),

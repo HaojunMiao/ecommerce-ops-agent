@@ -23,10 +23,10 @@ func TestChineseTokenizerSplitsRefundQuestion(t *testing.T) {
 	}
 }
 
-func TestLexicalQueryUsesORAndKeepsBusinessIdentifiers(t *testing.T) {
+func TestLexicalQueryUsesSpaceSeparatedTermsAndKeepsBusinessIdentifiers(t *testing.T) {
 	query := lexicalQuery("请查询 SKU-BLACK-M-01 的退款规则")
-	if !strings.Contains(query, " OR ") {
-		t.Fatalf("expected OR query, got %q", query)
+	if strings.Contains(query, " OR ") || !strings.Contains(query, " ") {
+		t.Fatalf("expected space-separated terms for pg_search match-any, got %q", query)
 	}
 	if !strings.Contains(strings.ToLower(query), "sku") || !strings.Contains(query, "退款") {
 		t.Fatalf("expected identifier and refund terms, got %q", query)

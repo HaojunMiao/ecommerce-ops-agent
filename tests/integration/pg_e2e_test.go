@@ -106,8 +106,7 @@ func TestKBIngestE2E_PG(t *testing.T) {
 		t.Fatalf("create kb: %v", err)
 	}
 	dir := t.TempDir()
-	// 含 ASCII 词元 SKU-2024:pgvector 的 BM25 用 to_tsvector('simple',...),对中文不分词,
-	// 故让 query 与 doc 共享一个 ASCII 词元,确保 bm25 档也能命中(中文分词见 ADR 0019)。
+	// 同时包含中文业务词与 ASCII 标识符，覆盖 GSE + pg_search BM25 的两类词元。
 	if err := os.WriteFile(filepath.Join(dir, "refund.md"), []byte("退款政策:用户在七天内可以申请退款,需提供订单号 SKU-2024。"), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -115,9 +114,7 @@ func TestKBIngestE2E_PG(t *testing.T) {
 	if err != nil || res.Ingested != 1 {
 		t.Fatalf("sync kb: res=%+v err=%v", res, err)
 	}
-	// 三档都应在真 pgvector 上命中。query 用纯 ASCII 词元 SKU-2024:
-	// plainto_tsquery 会把多词元用 AND 连接,而 'simple' 对中文不分词(整段 CJK 成一个词元),
-	// 故混入中文会因 AND 落空;用 doc 里存在的 ASCII 词元最稳(中文分词见 ADR 0019)。
+	// 三档都应在真实 PostgreSQL 链路上命中；关键词档额外验证中文自然语言查询。
 	for _, mode := range []string{"bm25", "vector", "hybrid"} {
 		ps, err := plat.KB.SearchMode(ctx, knb.ID, "SKU-2024", 3, mode)
 		if err != nil {
@@ -126,6 +123,10 @@ func TestKBIngestE2E_PG(t *testing.T) {
 		if len(ps) == 0 {
 			t.Fatalf("search mode %s: expected hits, got 0", mode)
 		}
+	}
+	ps, err := plat.KB.SearchMode(ctx, knb.ID, "怎么申请退款", 3, "bm25")
+	if err != nil || len(ps) == 0 || !strings.Contains(ps[0].Text, "退款") {
+		t.Fatalf("Chinese BM25 search: hits=%+v err=%v", ps, err)
 	}
 	// 文档已落库。
 	docs, err := plat.KB.ListDocuments(ctx, knb.ID)

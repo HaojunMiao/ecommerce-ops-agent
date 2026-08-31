@@ -93,14 +93,14 @@ func normalizeTokens(raw []string) []string {
 	return tokens
 }
 
-// lexicalDocument 是写入 kb_chunks.search_text 的空格分隔文本。PostgreSQL 的
-// simple 配置只负责标准化这些已经切好的词，不再负责中文分词。
+// lexicalDocument 是写入 kb_chunks.search_text 的空格分隔文本。pg_search 的
+// whitespace tokenizer 只切分这些已经由 GSE 处理好的词，不再负责中文分词。
 func lexicalDocument(text string) string {
 	return strings.Join(tokenize(text), " ")
 }
 
-// lexicalQuery 为 websearch_to_tsquery 构造 OR 查询。使用 OR 而不是隐式 AND，
-// 避免“申请退款”因为文档缺少“申请”或自然语言问句带虚词而整条召回失败。
+// lexicalQuery 为 pg_search 的 match-any(|||)运算符构造空格分隔查询。查询侧与
+// 索引侧使用同一组 GSE 词元；||| 负责 OR 语义，避免部分词缺失导致整条召回失败。
 func lexicalQuery(text string) string {
 	tokens := tokenize(text)
 	if len(tokens) == 0 {
@@ -115,7 +115,7 @@ func lexicalQuery(text string) string {
 		seen[token] = struct{}{}
 		unique = append(unique, token)
 	}
-	return strings.Join(unique, " OR ")
+	return strings.Join(unique, " ")
 }
 
 // fallbackTokenize 仅在嵌入词典初始化异常时兜底，保证服务仍可启动。测试会直接

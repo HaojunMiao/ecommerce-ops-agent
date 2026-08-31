@@ -79,7 +79,11 @@ services:
     restart: "no"
 
   db:
-    image: pgvector/pgvector:pg16@sha256:00ba258a66dac104fd5171074a0084462a64a1369d8513f3d0a634e2f24d15bc
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.postgres
+    image: ecommerce-ops-postgres:pg16-bm25-0.25.0
+    command: ["postgres", "-c", "shared_preload_libraries=pg_search"]
     environment:
       POSTGRES_USER: kbot
       POSTGRES_PASSWORD: kbot

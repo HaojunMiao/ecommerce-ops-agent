@@ -1,10 +1,10 @@
 //go:build integration
 
-// Package testpg 为集成测试提供一个真实 Postgres(pgvector)实例 + 已迁移的 schema。
+// Package testpg 为集成测试提供一个真实 Postgres(pgvector + pg_search)实例 + 已迁移的 schema。
 //
 // 两种模式:
 //   - 若设置了 KBOT_TEST_DATABASE_URL,直接连它(适合本地复用一个常驻容器,迭代快);
-//   - 否则用 ory/dockertest 拉起 pgvector/pgvector:pg16 容器,测试结束自动销毁。
+//   - 否则构建 deploy/Dockerfile.postgres 并用 ory/dockertest 拉起容器,测试结束自动销毁。
 //
 // 两种模式都会先把 migrations/ 全套跑一遍,保证 schema 与生产一致。
 // 仅在 `-tags=integration` 下编译,普通 `go build` / `go test` 不引入 dockertest。
@@ -13,8 +13,10 @@ package testpg
 import (
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -59,15 +61,35 @@ func startFromDocker(t *testing.T) *pgxpool.Pool {
 		t.Fatalf("testpg: Docker daemon 未就绪: %v", err)
 	}
 
+	repoRoot, err := findRepoRoot()
+	if err != nil {
+		t.Fatalf("testpg: 定位仓库失败: %v", err)
+	}
+	const imageRepository = "ecommerce-ops-postgres"
+	const imageTag = "pg16-bm25-0.25.0"
+	if _, err := pool.Client.InspectImage(imageRepository + ":" + imageTag); err != nil {
+		if err := pool.Client.BuildImage(docker.BuildImageOptions{
+			Name:         imageRepository + ":" + imageTag,
+			Dockerfile:   "Dockerfile.postgres",
+			ContextDir:   filepath.Join(repoRoot, "deploy"),
+			OutputStream: io.Discard,
+			BuildArgs: []docker.BuildArg{
+				{Name: "TARGETARCH", Value: runtime.GOARCH},
+			},
+		}); err != nil {
+			t.Fatalf("testpg: 构建 PostgreSQL BM25 镜像失败: %v", err)
+		}
+	}
 	res, err := pool.RunWithOptions(&dockertest.RunOptions{
-		Repository: "pgvector/pgvector",
-		Tag:        "pg16",
+		Repository: imageRepository,
+		Tag:        imageTag,
 		Env: []string{
 			"POSTGRES_USER=kbot",
 			"POSTGRES_PASSWORD=kbot",
 			"POSTGRES_DB=kbot",
 			"listen_addresses='*'",
 		},
+		Cmd: []string{"postgres", "-c", "shared_preload_libraries=pg_search"},
 	}, func(c *docker.HostConfig) {
 		c.AutoRemove = true
 		c.RestartPolicy = docker.RestartPolicy{Name: "no"}
@@ -133,15 +155,22 @@ func runMigrations(rawURL string) error {
 
 // findMigrationsDir 从当前测试工作目录向上找到含 go.mod 的仓库根,返回其 migrations/ 绝对路径。
 func findMigrationsDir() (string, error) {
+	repoRoot, err := findRepoRoot()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(repoRoot, "migrations"), nil
+}
+
+func findRepoRoot() (string, error) {
 	wd, err := os.Getwd()
 	if err != nil {
 		return "", err
 	}
 	for dir := wd; ; {
 		if _, err := os.Stat(filepath.Join(dir, "go.mod")); err == nil {
-			mig := filepath.Join(dir, "migrations")
-			if _, err := os.Stat(mig); err == nil {
-				return mig, nil
+			if _, err := os.Stat(filepath.Join(dir, "migrations")); err == nil {
+				return dir, nil
 			}
 			return "", fmt.Errorf("找到 go.mod 于 %s 但无 migrations/ 目录", dir)
 		}

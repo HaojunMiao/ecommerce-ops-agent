@@ -33,6 +33,8 @@ KBOT_RERANKER_CANDIDATE_K=10
 
 项目显式请求 2048 维向量，数据库使用 `halfvec(2048) + HNSW cosine`；server 查询与 worker 入库必须使用完全相同的模型和维度。模型、接口地址或维度变化会进入文档指纹并自动触发 Connector 文档重新向量化。旧上传文档没有可重读的 Connector 源时，需要重新上传。
 
+关键词检索使用 `pg_search 0.25.0` 的 BM25 索引。数据库镜像仍以原先固定的 PostgreSQL 16 + pgvector 镜像为基础，只额外安装经过 SHA256 校验的 pg_search 包；`shared_preload_libraries=pg_search` 由 Compose 显式传入，因此已有数据卷重启后也能加载扩展。迁移 `000036` 会直接为现有 `kb_chunks.search_text` 建索引，不需要重新切片或向量化。旧 `tsvector/GIN` 暂时保留为回滚安全网，但运行时查询已不再使用。
+
 不要把 API Key 写进命令参数或提交到仓库。可使用无回显配置命令：
 
 ```bash
@@ -79,9 +81,9 @@ make rag-eval-down
 go run ./evals/run_agent_eval.go
 ```
 
-`rag-eval-offline` 是 Python 算法消融实验，用于比较切片、召回器、Top-K 与 Reranker；它使用真实向量模型，但关键词评分采用离线 Okapi BM25，不是生产 PostgreSQL `ts_rank_cd`，因此不能把离线混合检索指标表述为线上效果。
+`rag-eval-offline` 是 Python 算法消融实验，用于比较切片、召回器、Top-K 与 Reranker；它使用真实向量模型和离线 Okapi BM25。生产链路同样采用 BM25，但由 PostgreSQL `pg_search` 执行，因此离线结果用于算法选型，不能替代真实 HTTP/数据库链路验证。
 
-`rag-eval-system` 要求先用 `rag-eval-up` 启动隔离环境并完成入库。它通过真实 HTTP API 调用 Go 服务，覆盖生产使用的 GSE 分词、PostgreSQL `ts_rank_cd`、真实向量模型和 RRF 融合。检索评测输出 Hit@K、Precision@K、MRR、NDCG 等指标到 `evals/results/`；Agent 评测覆盖工具选择、参数、审批合规、禁止工具和任务完成。
+`rag-eval-system` 要求先用 `rag-eval-up` 启动隔离环境并完成入库。它通过真实 HTTP API 调用 Go 服务，覆盖生产使用的 GSE 分词、PostgreSQL `pg_search` BM25、真实向量模型和 RRF 融合。检索评测输出 Hit@K、Precision@K、MRR、NDCG 等指标到 `evals/results/`；Agent 评测覆盖工具选择、参数、审批合规、禁止工具和任务完成。
 
 固定数据集包含 190 篇合成文档和 140 条独立查询：40 条 dev 查询用于选参，100 条 test 查询用于最终报告；覆盖 BM25、向量、混合检索、切片边界、Top-K 和 Reranker 消融。
 
