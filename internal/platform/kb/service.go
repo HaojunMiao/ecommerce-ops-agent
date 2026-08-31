@@ -36,6 +36,7 @@ type Store interface {
 	ListKBs(ctx context.Context, workspaceID string) ([]*domain.KnowledgeBase, error)
 	UpdateKBStatus(ctx context.Context, kbID, status string) error
 	UpdateKBEmbeddingModel(ctx context.Context, kbID, model string) error
+	UpdateKBChunkingConfig(ctx context.Context, kbID, chunkingConfig string) error
 	BeginKBReindex(ctx context.Context, kbID, embeddingIdentity string) error
 	ActivateKBIfReady(ctx context.Context, kbID, embeddingIdentity string) (bool, error)
 
@@ -65,7 +66,7 @@ type Service struct {
 
 // NewService 创建 KB 服务。enqueuer 可为 nil(单测 / e2e 走同步 ingest)。
 func NewService(store Store, r retriever.Searcher, enqueuer TaskEnqueuer) *Service {
-	return &Service{store: store, retriever: r, enqueuer: enqueuer, chunkSize: 500, overlap: 100}
+	return &Service{store: store, retriever: r, enqueuer: enqueuer, chunkSize: 1200, overlap: 200}
 }
 
 // ConfigureMarkdownAllowedRoots 设置 HTTP Connector 可以读取的服务端目录根。
@@ -87,7 +88,7 @@ func (s *Service) CreateKB(ctx context.Context, req CreateKBRequest) (*domain.Kn
 		ID:             util.GenerateID(),
 		WorkspaceID:    req.WorkspaceID,
 		Name:           req.Name,
-		ChunkingConfig: `{"size":500,"overlap":100}`,
+		ChunkingConfig: s.chunkingConfig(),
 		EmbeddingModel: s.retriever.Embedder().Identity(),
 		Status:         "active",
 		CreatedBy:      req.CreatedBy,
@@ -98,6 +99,10 @@ func (s *Service) CreateKB(ctx context.Context, req CreateKBRequest) (*domain.Kn
 		return nil, fmt.Errorf("create kb: %w", err)
 	}
 	return kb, nil
+}
+
+func (s *Service) chunkingConfig() string {
+	return fmt.Sprintf(`{"size":%d,"overlap":%d}`, s.chunkSize, s.overlap)
 }
 
 // ListKBs 列出知识库。
@@ -154,7 +159,7 @@ type SyncResult struct {
 
 // ingestPipelineVersion 参与文档指纹计算。切片、分词或索引语义发生变化时递增，
 // 即使源文件没变也会触发一次重建；完成后再次同步仍会按指纹跳过。
-const ingestPipelineVersion = "rune-chunk-v2-gse-lexical-v1"
+const ingestPipelineVersion = "rune-chunk-v3-1200-200-gse-lexical-v1"
 
 // SyncMarkdownFolder 扫描指定路径的 Markdown 文件夹，对新增/变更的文档跑 ingest。
 // 直接传 rootPath，便于 API / 测试使用;实际部署可从 ConnectorInstance.config 解析。
@@ -211,7 +216,15 @@ func (s *Service) syncConnector(ctx context.Context, kbID string, conn connector
 		return nil, fmt.Errorf("list documents: %w", err)
 	}
 	embeddingIdentity := s.retriever.Embedder().Identity()
-	if base.EmbeddingModel != embeddingIdentity {
+	chunkingConfig := s.chunkingConfig()
+	chunkingChanged := base.ChunkingConfig != chunkingConfig
+	if chunkingChanged {
+		if err := s.store.UpdateKBChunkingConfig(ctx, kbID, chunkingConfig); err != nil {
+			return nil, fmt.Errorf("update kb chunking config: %w", err)
+		}
+		base.ChunkingConfig = chunkingConfig
+	}
+	if base.EmbeddingModel != embeddingIdentity || chunkingChanged {
 		if err := s.store.BeginKBReindex(ctx, kbID, embeddingIdentity); err != nil {
 			return nil, fmt.Errorf("begin kb reindex: %w", err)
 		}

@@ -1,0 +1,15 @@
+services:
+  app:
+    environment:
+      KBOT_AUTOSEED_ADMIN: "true"
+      KBOT_AUTOSEED_ADMIN_EMAIL: admin@ecommerce-ops.local
+      KBOT_AUTOSEED_ADMIN_PASSWORD: admin12345
+      KBOT_KB_MARKDOWN_ALLOWED_ROOTS: /scenarios
+    volumes:
+      - ${PWD}/evals/corpus/rag-evaluation:/scenarios/rag-evaluation:ro
+
+  worker:
+    environment:
+      KBOT_KB_MARKDOWN_ALLOWED_ROOTS: /scenarios
+    volumes:
+      - ${PWD}/evals/corpus/rag-evaluation:/scenarios/rag-evaluation:ro

@@ -1,0 +1,217 @@
+{
+  "protocol": {
+    "scope": "low-cost extractive answer smoke test; not LLM-judged RAGAS Faithfulness",
+    "model": "Qwen/Qwen2.5-7B-Instruct",
+    "retrieval": "stored offline 1200/200 hybrid equal-RRF top-5",
+    "sampling": "2 deterministic test cases per category, seed=20260831",
+    "max_requests": 12,
+    "max_output_tokens_per_request": 192,
+    "case_answer_correct_definition": "strict Gold span plus valid generated citation; semantic correctness requires manual review"
+  },
+  "automatic_strict_metrics": {
+    "sample_size": 12,
+    "evidence_available_rate": 1.0,
+    "strict_gold_span_with_valid_citation_rate": 0.08333333333333333,
+    "strict_answerable_correct_rate": 0.08333333333333333,
+    "valid_generated_chunk_id_rate": 0.1,
+    "correct_refusal_rate": null
+  },
+  "manual_semantic_review": {
+    "reviewed_cases": 12,
+    "answer_correct_rate": 0.6666666666666666,
+    "answer_correct_count": 8,
+    "faithful_among_nonempty_nonrefusal_answers_rate": 0.9,
+    "faithful_among_nonempty_nonrefusal_answers_count": 9,
+    "nonempty_nonrefusal_answers": 10,
+    "correct_and_faithful_rate": 0.6666666666666666,
+    "correct_and_faithful_count": 8,
+    "correct_case_ids": [
+      "long_tax_withholding_2",
+      "long_fraud_review_4",
+      "long_packaging_recycling_1",
+      "long_tax_withholding_1",
+      "long_export_control_1",
+      "long_payment_dispute_1",
+      "long_delivery_signature_1",
+      "long_inventory_aging_1"
+    ],
+    "error_cases": [
+      {"id": "long_return_warehouse_2", "type": "irrelevant_context_answer"},
+      {"id": "long_warehouse_cycle_count_4", "type": "empty_or_malformed_output"},
+      {"id": "long_lost_parcel_3", "type": "false_refusal"},
+      {"id": "long_packaging_recycling_3", "type": "truncated_exact_code"}
+    ],
+    "error_counts": {
+      "irrelevant_context_answer": 1,
+      "empty_or_malformed_output": 1,
+      "false_refusal": 1,
+      "truncated_exact_code": 1
+    },
+    "method": "人工逐条核对答案、Gold事实与实际Top-5上下文；不使用第二个LLM裁判。cases.answer_correct是自动严格抽取+引用校验字段，不等同于本节人工语义正确性。"
+  },
+  "usage": {
+    "prompt_tokens": 39234,
+    "completion_tokens": 664,
+    "total_tokens": 39898,
+    "prompt_cache_hit_tokens": 864,
+    "prompt_cache_miss_tokens": 38370
+  },
+  "cases": [
+    {
+      "id": "long_return_warehouse_2",
+      "category": "boundary",
+      "query": "包装已破且正在漏液的商品可以寄进普通售后仓吗？",
+      "gold_span": "危险品和破损液体不得寄入普通退货仓",
+      "evidence_available": true,
+      "answer": "破损举证的当前明确要求为：签收后48小时内提交。审核过程中应保持原始字段不变，并把每一步判断写入记录；如果来源不完整，应停止自动处理并请求补充材料。系统显示的提示语不能替代正式政策，培训示例也不得作为作为数值依据。",
+      "cited_chunk_id": "3",
+      "abstained": false,
+      "citation_valid": false,
+      "answer_correct": false,
+      "refusal_correct": false
+    },
+    {
+      "id": "long_tax_withholding_2",
+      "category": "boundary",
+      "query": "订单已经全额退款，之前平台扣的税会在哪个周期调整回来？",
+      "gold_span": "全额退款后在下一结算周期冲回代扣税",
+      "evidence_available": true,
+      "answer": "全额退款后在下一结算周期冲回代扣税。",
+      "cited_chunk_id": "t[2t_withholding#]",
+      "abstained": false,
+      "citation_valid": false,
+      "answer_correct": false,
+      "refusal_correct": false
+    },
+    {
+      "id": "long_fraud_review_4",
+      "category": "colloquial",
+      "query": "风控分35分还能自动过吗？",
+      "gold_span": "风险分低于35时允许自动放行",
+      "evidence_available": true,
+      "answer": "在确认命中支付风险规则的订单且没有例外标记后，自动放行阈值的当前明确要求为：风险分低于35时允许自动放行。",
+      "cited_chunk_id": "fraud_review#1",
+      "abstained": false,
+      "citation_valid": true,
+      "answer_correct": true,
+      "refusal_correct": false
+    },
+    {
+      "id": "long_warehouse_cycle_count_4",
+      "category": "colloquial",
+      "query": "贵重SKU是不是每星期都得盘一次？",
+      "gold_span": "高价值SKU每7天至少盘点一次",
+      "evidence_available": true,
+      "answer": "",
+      "cited_chunk_id": "",
+      "abstained": false,
+      "citation_valid": false,
+      "answer_correct": false,
+      "refusal_correct": false
+    },
+    {
+      "id": "long_lost_parcel_3",
+      "category": "exact_code",
+      "query": "十四天无轨迹的丢件案件使用什么case code？",
+      "gold_span": "LOST-PARCEL-14D",
+      "evidence_available": true,
+      "answer": "无法根据给定资料回答",
+      "cited_chunk_id": "",
+      "abstained": true,
+      "citation_valid": false,
+      "answer_correct": false,
+      "refusal_correct": false
+    },
+    {
+      "id": "long_packaging_recycling_3",
+      "category": "exact_code",
+      "query": "德国包装注册检查在系统中对应哪个校验码？",
+      "gold_span": "DE-PACK-LUCID",
+      "evidence_available": true,
+      "answer": "DE-PACK-L",
+      "cited_chunk_id": "3",
+      "abstained": false,
+      "citation_valid": false,
+      "answer_correct": false,
+      "refusal_correct": false
+    },
+    {
+      "id": "long_packaging_recycling_1",
+      "category": "implicit",
+      "query": "商品准备发往德国，包装注册号可以等产生销量以后再补吗？",
+      "gold_span": "发货前必须登记LUCID包装注册号",
+      "evidence_available": true,
+      "answer": "在确认销往德国的商品外包装且没有例外标记后，注册要求的当前明确要求为：发货前必须登记LUCID包装注册号。该结论必须和版本号一起写入处理记录。",
+      "cited_chunk_id": "[packetàge_recycling#]",
+      "abstained": false,
+      "citation_valid": false,
+      "answer_correct": false,
+      "refusal_correct": false
+    },
+    {
+      "id": "long_tax_withholding_1",
+      "category": "implicit",
+      "query": "US平台代扣税应按下单标价，还是等订单完成后按应税销售额算？",
+      "gold_span": "以订单完成时的应税销售额计算",
+      "evidence_available": true,
+      "answer": "在确认适用平台代扣规则的US站订单且没有例外标记后，计税时点的当前明确要求为：以订单完成时的应税销售额计算。",
+      "cited_chunk_id": "t[t_withholding#}",
+      "abstained": false,
+      "citation_valid": false,
+      "answer_correct": false,
+      "refusal_correct": false
+    },
+    {
+      "id": "long_export_control_1",
+      "category": "paraphrase",
+      "query": "跨境订单的制裁名单检查是在付款后、出库前哪个阶段完成？",
+      "gold_span": "付款成功后、仓库放行前完成筛查",
+      "evidence_available": true,
+      "answer": "在确认跨境订单的收件人与最终目的地且没有例外标记后，筛查时点的当前明确要求为：付款成功后、仓库放行前完成筛查。该结论必须和版本号一起写入处理记录。",
+      "cited_chunk_id": "#1",
+      "abstained": false,
+      "citation_valid": false,
+      "answer_correct": false,
+      "refusal_correct": false
+    },
+    {
+      "id": "long_payment_dispute_1",
+      "category": "paraphrase",
+      "query": "平台收到支付争议预警后，第一次回复最迟不能超过多少小时？",
+      "gold_span": "收到预警后48小时内首次响应",
+      "evidence_available": true,
+      "answer": "收到预警后48小时内首次响应。",
+      "cited_chunk_id": "payment_dispute#",
+      "abstained": false,
+      "citation_valid": false,
+      "answer_correct": false,
+      "refusal_correct": false
+    },
+    {
+      "id": "long_delivery_signature_1",
+      "category": "scenario",
+      "query": "申报价值正好300美元的包裹是否必须加购签名签收？",
+      "gold_span": "申报价值达到300 USD必须购买签名服务",
+      "evidence_available": true,
+      "answer": "必须加购签名签收",
+      "cited_chunk_id": "# 高价值包裹签收（当前生效版#1",
+      "abstained": false,
+      "citation_valid": false,
+      "answer_correct": false,
+      "refusal_correct": false
+    },
+    {
+      "id": "long_inventory_aging_1",
+      "category": "scenario",
+      "query": "某批海外仓商品入库已经200天，应不应该进入长库龄管理？",
+      "gold_span": "入库满180天进入长库龄管理",
+      "evidence_available": true,
+      "answer": "在确认海外仓长期未售出的普通库存且没有例外标记后，长库龄阈值的当前明确要求为：入库满180天进入长库龄管理。该结论必须和版本号一起写入处理记录。",
+      "cited_chunk_id": "inventory_#",
+      "abstained": false,
+      "citation_valid": false,
+      "answer_correct": false,
+      "refusal_correct": false
+    }
+  ]
+}

@@ -87,6 +87,39 @@ func TestLoadUsesIndependentEmbeddingConfiguration(t *testing.T) {
 	}
 }
 
+func TestLoadRerankerReusesEmbeddingAPIKey(t *testing.T) {
+	t.Setenv("KBOT_EMBEDDER_API_KEY", "shared-secret")
+	t.Setenv("KBOT_RERANKER_API_KEY", "")
+	t.Setenv("KBOT_RERANKER_ENABLED", "true")
+	t.Setenv("KBOT_RERANKER_MODEL", "Qwen/Qwen3-Reranker-4B")
+
+	cfg := Load()
+	if cfg.RerankerAPIKey != "shared-secret" {
+		t.Fatalf("reranker key = %q, want embedding key fallback", cfg.RerankerAPIKey)
+	}
+	if !cfg.RerankerEnabled || cfg.RerankerCandidateK != 10 {
+		t.Fatalf("reranker defaults not loaded: %+v", cfg)
+	}
+}
+
+func TestValidateRequiresEnabledRerankerConfiguration(t *testing.T) {
+	cfg := Config{
+		DatabaseURL: "postgres://db", JWTSecretKey: "jwt-development-secret-000000000000001",
+		CredentialEncryptionKey: "credential-development-secret-00000001",
+		Environment:             "dev", LLMTimeoutMS: 120000, EmbedderDim: 2048,
+		RerankerEnabled: true, RerankerCandidateK: 10,
+	}
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("missing reranker endpoint, key and model must be rejected")
+	}
+	cfg.RerankerBaseURL = "https://rerank.example/v1"
+	cfg.RerankerAPIKey = "secret"
+	cfg.RerankerModel = "example/reranker"
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("valid reranker config rejected: %v", err)
+	}
+}
+
 func TestValidateRequiresOpenAIEmbeddingCredentials(t *testing.T) {
 	cfg := Config{
 		DatabaseURL: "postgres://db", JWTSecretKey: "jwt-development-secret-000000000000001",

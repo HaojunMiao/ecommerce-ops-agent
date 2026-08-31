@@ -10,6 +10,8 @@
 - `KBOT_EMBEDDER_BASE_URL`
 - `KBOT_EMBEDDER_API_KEY`（`KBOT_EMBEDDER=openai` 时必填）
 - `KBOT_EMBEDDER_MODEL`
+- `KBOT_RERANKER_ENABLED`（开启模型重排时设为 `true`）
+- `KBOT_RERANKER_MODEL`（当前为 `Qwen/Qwen3-Reranker-4B`）
 - `KBOT_JWT_SECRET_KEY`
 - `KBOT_CREDENTIAL_ENCRYPTION_KEY`
 
@@ -21,7 +23,13 @@ KBOT_EMBEDDER_BASE_URL=https://api.siliconflow.cn/v1
 KBOT_EMBEDDER_API_KEY=仅写入本地.env或SecretManager
 KBOT_EMBEDDER_MODEL=Qwen/Qwen3-Embedding-4B
 KBOT_EMBEDDER_DIM=2048
+KBOT_RERANKER_ENABLED=true
+KBOT_RERANKER_BASE_URL=https://api.siliconflow.cn/v1
+KBOT_RERANKER_MODEL=Qwen/Qwen3-Reranker-4B
+KBOT_RERANKER_CANDIDATE_K=10
 ```
+
+`KBOT_RERANKER_API_KEY` 可独立配置；留空时复用 `KBOT_EMBEDDER_API_KEY`。开启后仅改变查询时的排序：等权 RRF 先返回候选，再由 Reranker 输出调用方要求的 Top-K；无需重新向量化或重灌知识库。Reranker 接口临时失败时回退到原等权 RRF 顺序。
 
 项目显式请求 2048 维向量，数据库使用 `halfvec(2048) + HNSW cosine`；server 查询与 worker 入库必须使用完全相同的模型和维度。模型、接口地址或维度变化会进入文档指纹并自动触发 Connector 文档重新向量化。旧上传文档没有可重读的 Connector 源时，需要重新上传。
 
@@ -61,23 +69,20 @@ make crossborder-e2e
 ## 离线评测
 
 ```bash
-make rag-eval
-make rag-eval-production
-make rag-benchmark
-make rag-benchmark-up
-make rag-benchmark-production
-make rag-benchmark-down
-make rag-long-benchmark
-make rag-long-benchmark-up
-make rag-long-benchmark-production
-make rag-long-benchmark-down
+make rag-eval-build
+make rag-eval-offline
+make rag-eval-reranker
+make rag-eval-answer-smoke
+make rag-eval-up
+make rag-eval-system
+make rag-eval-down
 go run ./evals/run_agent_eval.go
 ```
 
-`rag-eval` 是 Python 算法消融实验，用于快速比较切片、分词和 RRF 参数；它使用真实向量模型，但关键词评分不是生产 PostgreSQL 链路，因此不能把混合检索指标直接当作线上效果。
+`rag-eval-offline` 是 Python 算法消融实验，用于比较切片、召回器、Top-K 与 Reranker；它使用真实向量模型，但关键词评分采用离线 Okapi BM25，不是生产 PostgreSQL `ts_rank_cd`，因此不能把离线混合检索指标表述为线上效果。
 
-`rag-eval-production` 要求平台与电商演示数据已经启动并完成入库。它通过真实 HTTP API 调用 Go 服务，覆盖生产使用的 GSE 分词、PostgreSQL `ts_rank_cd`、真实向量模型和 RRF 融合。两类评测均输出 Recall@K、MRR、NDCG 等指标到 `evals/results/`；Agent 评测覆盖工具选择、参数、审批合规、禁止工具、任务完成和幂等性。
+`rag-eval-system` 要求先用 `rag-eval-up` 启动隔离环境并完成入库。它通过真实 HTTP API 调用 Go 服务，覆盖生产使用的 GSE 分词、PostgreSQL `ts_rank_cd`、真实向量模型和 RRF 融合。检索评测输出 Hit@K、Precision@K、MRR、NDCG 等指标到 `evals/results/`；Agent 评测覆盖工具选择、参数、审批合规、禁止工具和任务完成。
 
-`rag-benchmark` 是早期短文档基线，只用于回归评测脚本；不要再用它做切片和检索选型。最终实验使用 `rag-long-benchmark`：生成 48/152/168 篇长文档和 64 条独立问句，按业务主题隔离 dev/test，覆盖 BM25、向量、混合检索、切片、边界答案、Top-K 和生命周期消融。
+固定数据集包含 190 篇合成文档和 140 条独立查询：40 条 dev 查询用于选参，100 条 test 查询用于最终报告；覆盖 BM25、向量、混合检索、切片边界、Top-K 和 Reranker 消融。
 
-`rag-long-benchmark-up` 使用独立端口 `8182/55432/16379` 启动真实链路，随后运行 `rag-long-benchmark-production`；结束后用 `rag-long-benchmark-down` 停止容器并保留数据卷。完整方法、指标解释与最终结论见 `docs/rag-evaluation-report.md`。
+`rag-eval-up` 使用独立端口启动真实链路；结束后用 `rag-eval-down` 停止容器并保留数据卷。完整方法、指标解释与最终结论见 `docs/rag-evaluation-report.md`。

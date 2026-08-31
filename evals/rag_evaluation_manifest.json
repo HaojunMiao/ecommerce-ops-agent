@@ -1,0 +1,23 @@
+{
+  "synthetic": true,
+  "description": "固定RAG检索评测集；文档与查询独立构造，事实均为虚构。",
+  "query_authorship": "independent manually-authored query bank; not document template questions",
+  "split": "policy-level holdout: 10 dev policies / 25 test policies",
+  "subsets": {
+    "core": 70,
+    "noise120": 190
+  },
+  "tiers": {
+    "policy": 35,
+    "domain_distractor": 35,
+    "background": 120
+  },
+  "queries": 140,
+  "dev_queries": 40,
+  "test_queries": 100,
+  "document_chars": {
+    "min": 2120,
+    "max": 3074,
+    "mean": 2885.2
+  }
+}

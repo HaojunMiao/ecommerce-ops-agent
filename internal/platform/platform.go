@@ -65,6 +65,38 @@ const rateLimitPerMin = 1000
 //   - embedder:KB 向量化嵌入器(nil 时默认 LocalEmbedder(256),仅内存路径用)。
 //   - kbEnqueuer:KB ingest 异步投递器(nil 时 Sync 走进程内同步 ingest)。
 func NewService(db *pgxpool.Pool, rds *redis.Client, jwtKey []byte, pub prompt.Publisher, embedder retriever.Embedder, kbEnqueuer kb.TaskEnqueuer, credentialKeys ...[]byte) *Service {
+	return newService(db, rds, jwtKey, pub, embedder, kbEnqueuer, nil, 0, credentialKeys...)
+}
+
+// NewServiceWithReranker 在服务端检索链路启用可选模型重排；worker 无需构造它。
+func NewServiceWithReranker(
+	db *pgxpool.Pool,
+	rds *redis.Client,
+	jwtKey []byte,
+	pub prompt.Publisher,
+	embedder retriever.Embedder,
+	kbEnqueuer kb.TaskEnqueuer,
+	reranker retriever.Reranker,
+	rerankerCandidateK int,
+	credentialKeys ...[]byte,
+) *Service {
+	return newService(
+		db, rds, jwtKey, pub, embedder, kbEnqueuer,
+		reranker, rerankerCandidateK, credentialKeys...,
+	)
+}
+
+func newService(
+	db *pgxpool.Pool,
+	rds *redis.Client,
+	jwtKey []byte,
+	pub prompt.Publisher,
+	embedder retriever.Embedder,
+	kbEnqueuer kb.TaskEnqueuer,
+	reranker retriever.Reranker,
+	rerankerCandidateK int,
+	credentialKeys ...[]byte,
+) *Service {
 	// server/worker 使用 PostgreSQL，无 db 的单元测试使用内存存储。
 	var (
 		iamStore    iam.Store
@@ -114,6 +146,9 @@ func NewService(db *pgxpool.Pool, rds *redis.Client, jwtKey []byte, pub prompt.P
 		kbSearcher = retriever.NewPgvectorRetriever(db, embedCache)
 	} else {
 		kbSearcher = retriever.New(embedCache)
+	}
+	if reranker != nil {
+		kbSearcher = retriever.NewRerankingSearcher(kbSearcher, reranker, rerankerCandidateK)
 	}
 	kbService := kb.NewService(kbStore, kbSearcher, kbEnqueuer)
 	pcache := promptcache.NewCache()

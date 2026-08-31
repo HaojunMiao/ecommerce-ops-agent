@@ -123,6 +123,7 @@ type Querier interface {
 	SetUserRole(ctx context.Context, arg SetUserRoleParams) error
 	UpdateIngestJob(ctx context.Context, arg UpdateIngestJobParams) error
 	UpdateJobStatus(ctx context.Context, arg UpdateJobStatusParams) error
+	UpdateKBChunkingConfig(ctx context.Context, arg UpdateKBChunkingConfigParams) error
 	UpdateKBEmbeddingModel(ctx context.Context, arg UpdateKBEmbeddingModelParams) error
 	UpdateKBStatus(ctx context.Context, arg UpdateKBStatusParams) error
 	UpdateSkillVersionStatus(ctx context.Context, arg UpdateSkillVersionStatusParams) error

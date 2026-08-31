@@ -18,6 +18,9 @@ UPDATE kbs SET status = $2, updated_at = now() WHERE id = $1;
 -- name: UpdateKBEmbeddingModel :exec
 UPDATE kbs SET embedding_model = $2, updated_at = now() WHERE id = $1;
 
+-- name: UpdateKBChunkingConfig :exec
+UPDATE kbs SET chunking_config = $2, updated_at = now() WHERE id = $1;
+
 -- name: SetKBIndexing :exec
 UPDATE kbs
 SET embedding_model = $2, status = 'indexing', updated_at = now()

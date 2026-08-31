@@ -70,9 +70,19 @@ func main() {
 	// Embedding 使用独立出口，避免与聊天模型供应商和密钥耦合。
 	embedder, err := retriever.NewEmbedder(cfg.EmbedderKind, cfg.EmbedderDim, cfg.EmbedderBaseURL, cfg.EmbedderAPIKey, cfg.EmbedderModel)
 	must(err)
+	var reranker retriever.Reranker
+	if cfg.RerankerEnabled {
+		reranker, err = retriever.NewSiliconFlowReranker(
+			cfg.RerankerBaseURL, cfg.RerankerAPIKey, cfg.RerankerModel,
+		)
+		must(err)
+		log.Printf("Reranker enabled: model=%s candidate_k=%d", cfg.RerankerModel, cfg.RerankerCandidateK)
+	}
 	// jobsClient 作为 KB ingest 的异步投递器:SyncMarkdownFolder → 入队 → worker 落 kb_chunks。
-	platformService := platform.NewService(db, rds, cfg.JWTKeyBytes(), publisher, embedder, jobsClient,
-		[]byte(cfg.CredentialEncryptionKey))
+	platformService := platform.NewServiceWithReranker(
+		db, rds, cfg.JWTKeyBytes(), publisher, embedder, jobsClient,
+		reranker, cfg.RerankerCandidateK, []byte(cfg.CredentialEncryptionKey),
+	)
 	endpointPolicy := tool.NewEndpointPolicy(cfg.ToolAllowedHosts, cfg.ToolAllowPrivateNetwork)
 	platformService.Tool.ConfigureEndpointPolicy(endpointPolicy)
 	platformService.ModelConfig.ConfigureEndpointPolicy(endpointPolicy)

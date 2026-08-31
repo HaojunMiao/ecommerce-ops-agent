@@ -381,6 +381,20 @@ func (q *Queries) UpdateIngestJob(ctx context.Context, arg UpdateIngestJobParams
 	return err
 }
 
+const updateKBChunkingConfig = `-- name: UpdateKBChunkingConfig :exec
+UPDATE kbs SET chunking_config = $2, updated_at = now() WHERE id = $1
+`
+
+type UpdateKBChunkingConfigParams struct {
+	ID             uuid.UUID
+	ChunkingConfig string
+}
+
+func (q *Queries) UpdateKBChunkingConfig(ctx context.Context, arg UpdateKBChunkingConfigParams) error {
+	_, err := q.db.Exec(ctx, updateKBChunkingConfig, arg.ID, arg.ChunkingConfig)
+	return err
+}
+
 const updateKBEmbeddingModel = `-- name: UpdateKBEmbeddingModel :exec
 UPDATE kbs SET embedding_model = $2, updated_at = now() WHERE id = $1
 `

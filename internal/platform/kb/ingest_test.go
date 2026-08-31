@@ -57,6 +57,12 @@ func (s *memStore) UpdateKBEmbeddingModel(_ context.Context, id, model string) e
 	s.kbs[id].EmbeddingModel = model
 	return nil
 }
+func (s *memStore) UpdateKBChunkingConfig(_ context.Context, id, chunkingConfig string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.kbs[id].ChunkingConfig = chunkingConfig
+	return nil
+}
 func (s *memStore) BeginKBReindex(_ context.Context, id, identity string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -385,6 +391,29 @@ func TestSyncReindexesWhenEmbedderIdentityChanges(t *testing.T) {
 	}
 	if second.Ingested != 1 || second.Skipped != 0 {
 		t.Fatalf("embedder change must trigger reindex, got %+v", second)
+	}
+}
+
+func TestSyncReindexesWhenChunkingConfigChanges(t *testing.T) {
+	svc, store := newTestService()
+	ctx := context.Background()
+	kb, _ := svc.CreateKB(ctx, CreateKBRequest{WorkspaceID: "w1", Name: "FAQ", CreatedBy: "u1"})
+	dir := t.TempDir()
+	mustWrite(t, filepath.Join(dir, "a.md"), strings.Repeat("跨境退款规则。", 200))
+
+	if first, err := svc.SyncMarkdownFolder(ctx, kb.ID, dir); err != nil || first.Ingested != 1 {
+		t.Fatalf("first sync: %+v err=%v", first, err)
+	}
+	store.kbs[kb.ID].ChunkingConfig = `{"size":500,"overlap":100}`
+	second, err := svc.SyncMarkdownFolder(ctx, kb.ID, dir)
+	if err != nil {
+		t.Fatalf("sync after chunking change: %v", err)
+	}
+	if second.Ingested != 1 || second.Skipped != 0 {
+		t.Fatalf("chunking change must trigger reindex, got %+v", second)
+	}
+	if got := store.kbs[kb.ID].ChunkingConfig; got != `{"size":1200,"overlap":200}` {
+		t.Fatalf("chunking config = %s", got)
 	}
 }
 

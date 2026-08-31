@@ -40,6 +40,13 @@ type Config struct {
 	EmbedderDim     int    // 必须与 kb_chunks.embedding halfvec(N) 一致
 	EmbedderModel   string // OpenAI 兼容 embedding 模型名
 
+	// KB 检索重排。API Key 未单独配置时复用 Embedding Key。
+	RerankerEnabled    bool
+	RerankerBaseURL    string
+	RerankerAPIKey     string
+	RerankerModel      string
+	RerankerCandidateK int
+
 	// JWT 认证
 	JWTSecretKey            string // JWT 签名密钥
 	CredentialEncryptionKey string // Tool 凭据的应用层加密密钥
@@ -83,11 +90,16 @@ func Load() Config {
 		LLMCachedInputPricePerMillion: getenvNumber(
 			"KBOT_LLM_CACHED_INPUT_PRICE_PER_MILLION", 0,
 		),
-		EmbedderKind:    getenv("KBOT_EMBEDDER", "local"),
-		EmbedderBaseURL: getenv("KBOT_EMBEDDER_BASE_URL", "https://api.siliconflow.cn/v1"),
-		EmbedderAPIKey:  os.Getenv("KBOT_EMBEDDER_API_KEY"),
-		EmbedderDim:     getenvInt("KBOT_EMBEDDER_DIM", 2048),
-		EmbedderModel:   getenv("KBOT_EMBEDDER_MODEL", "Qwen/Qwen3-Embedding-4B"),
+		EmbedderKind:       getenv("KBOT_EMBEDDER", "local"),
+		EmbedderBaseURL:    getenv("KBOT_EMBEDDER_BASE_URL", "https://api.siliconflow.cn/v1"),
+		EmbedderAPIKey:     os.Getenv("KBOT_EMBEDDER_API_KEY"),
+		EmbedderDim:        getenvInt("KBOT_EMBEDDER_DIM", 2048),
+		EmbedderModel:      getenv("KBOT_EMBEDDER_MODEL", "Qwen/Qwen3-Embedding-4B"),
+		RerankerEnabled:    strings.EqualFold(getenv("KBOT_RERANKER_ENABLED", "false"), "true"),
+		RerankerBaseURL:    getenv("KBOT_RERANKER_BASE_URL", "https://api.siliconflow.cn/v1"),
+		RerankerAPIKey:     os.Getenv("KBOT_RERANKER_API_KEY"),
+		RerankerModel:      getenv("KBOT_RERANKER_MODEL", "Qwen/Qwen3-Reranker-4B"),
+		RerankerCandidateK: getenvInt("KBOT_RERANKER_CANDIDATE_K", 10),
 
 		JWTSecretKey:       os.Getenv("KBOT_JWT_SECRET_KEY"), // 必填
 		OTLPEndpoint:       getenv("KBOT_OTLP_ENDPOINT", ""), // 可选，为空则禁用
@@ -104,6 +116,9 @@ func Load() Config {
 		AutoseedAdminPassword: getenv("KBOT_AUTOSEED_ADMIN_PASSWORD", "admin12345"),
 	}
 	cfg.CredentialEncryptionKey = os.Getenv("KBOT_CREDENTIAL_ENCRYPTION_KEY")
+	if cfg.RerankerAPIKey == "" {
+		cfg.RerankerAPIKey = cfg.EmbedderAPIKey
+	}
 	return cfg
 }
 
@@ -165,6 +180,24 @@ func (c Config) Validate() error {
 		}
 		if len(missingEmbedder) > 0 {
 			return fmt.Errorf("openai Embedding 缺少配置：%v", missingEmbedder)
+		}
+	}
+	if c.RerankerEnabled {
+		var missingReranker []string
+		if strings.TrimSpace(c.RerankerBaseURL) == "" {
+			missingReranker = append(missingReranker, "KBOT_RERANKER_BASE_URL")
+		}
+		if strings.TrimSpace(c.RerankerAPIKey) == "" {
+			missingReranker = append(missingReranker, "KBOT_RERANKER_API_KEY/KBOT_EMBEDDER_API_KEY")
+		}
+		if strings.TrimSpace(c.RerankerModel) == "" {
+			missingReranker = append(missingReranker, "KBOT_RERANKER_MODEL")
+		}
+		if len(missingReranker) > 0 {
+			return fmt.Errorf("Reranker 缺少配置：%v", missingReranker)
+		}
+		if c.RerankerCandidateK <= 0 {
+			return fmt.Errorf("KBOT_RERANKER_CANDIDATE_K 必须大于0")
 		}
 	}
 	if !strings.EqualFold(c.Environment, "prod") {

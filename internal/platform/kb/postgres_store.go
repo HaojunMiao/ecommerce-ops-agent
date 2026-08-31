@@ -91,6 +91,19 @@ func (s *PostgresStore) UpdateKBEmbeddingModel(ctx context.Context, kbID, model 
 	return nil
 }
 
+func (s *PostgresStore) UpdateKBChunkingConfig(ctx context.Context, kbID, chunkingConfig string) error {
+	id, err := uuid.Parse(kbID)
+	if err != nil {
+		return fmt.Errorf("parse kb id: %w", err)
+	}
+	if err := s.q.UpdateKBChunkingConfig(ctx, pgstore.UpdateKBChunkingConfigParams{
+		ID: id, ChunkingConfig: chunkingConfig,
+	}); err != nil {
+		return fmt.Errorf("update kb chunking config: %w", err)
+	}
+	return nil
+}
+
 func (s *PostgresStore) BeginKBReindex(ctx context.Context, kbID, embeddingIdentity string) error {
 	id, err := uuid.Parse(kbID)
 	if err != nil {

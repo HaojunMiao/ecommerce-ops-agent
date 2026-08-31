@@ -305,6 +305,18 @@ func (s *MemoryKBStore) UpdateKBEmbeddingModel(ctx context.Context, kbID, model 
 	return nil
 }
 
+func (s *MemoryKBStore) UpdateKBChunkingConfig(_ context.Context, kbID, chunkingConfig string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	kb, ok := s.kbs[kbID]
+	if !ok {
+		return fmt.Errorf("kb not found")
+	}
+	kb.ChunkingConfig = chunkingConfig
+	kb.UpdatedAt = time.Now()
+	return nil
+}
+
 func (s *MemoryKBStore) BeginKBReindex(_ context.Context, kbID, embeddingIdentity string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
