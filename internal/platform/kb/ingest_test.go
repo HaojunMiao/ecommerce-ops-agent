@@ -412,7 +412,7 @@ func TestSyncReindexesWhenChunkingConfigChanges(t *testing.T) {
 	if second.Ingested != 1 || second.Skipped != 0 {
 		t.Fatalf("chunking change must trigger reindex, got %+v", second)
 	}
-	if got := store.kbs[kb.ID].ChunkingConfig; got != `{"size":1200,"overlap":200}` {
+	if got := store.kbs[kb.ID].ChunkingConfig; got != `{"size":800,"overlap":100}` {
 		t.Fatalf("chunking config = %s", got)
 	}
 }

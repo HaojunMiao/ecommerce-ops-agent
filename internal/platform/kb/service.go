@@ -66,7 +66,7 @@ type Service struct {
 
 // NewService 创建 KB 服务。enqueuer 可为 nil(单测 / e2e 走同步 ingest)。
 func NewService(store Store, r retriever.Searcher, enqueuer TaskEnqueuer) *Service {
-	return &Service{store: store, retriever: r, enqueuer: enqueuer, chunkSize: 1200, overlap: 200}
+	return &Service{store: store, retriever: r, enqueuer: enqueuer, chunkSize: 800, overlap: 100}
 }
 
 // ConfigureMarkdownAllowedRoots 设置 HTTP Connector 可以读取的服务端目录根。
@@ -159,7 +159,7 @@ type SyncResult struct {
 
 // ingestPipelineVersion 参与文档指纹计算。切片、分词或索引语义发生变化时递增，
 // 即使源文件没变也会触发一次重建；完成后再次同步仍会按指纹跳过。
-const ingestPipelineVersion = "rune-chunk-v3-1200-200-gse-lexical-v1"
+const ingestPipelineVersion = "rune-chunk-v4-800-100-gse-lexical-v1"
 
 // SyncMarkdownFolder 扫描指定路径的 Markdown 文件夹，对新增/变更的文档跑 ingest。
 // 直接传 rootPath，便于 API / 测试使用;实际部署可从 ConnectorInstance.config 解析。
