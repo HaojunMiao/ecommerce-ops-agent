@@ -85,7 +85,7 @@ func runToolStoreContract(t *testing.T, newStore func(t *testing.T) tool.Store) 
 			t.Fatalf("CreateToolVersion: %v", err)
 		}
 
-		if _, err := s.GetToolLastSuccessfulTestRun(ctx, tl.ID); err == nil {
+		if _, err := s.GetToolLastSuccessfulTestRunForVersion(ctx, version.ID); err == nil {
 			t.Fatal("expected error when no successful run")
 		}
 		boom := "boom"
@@ -93,9 +93,9 @@ func runToolStoreContract(t *testing.T, newStore func(t *testing.T) tool.Store) 
 		if err := s.CreateTestRun(ctx, &domain.ToolTestRun{ID: util.GenerateID(), ToolID: tl.ID, ToolVersionID: version.ID, Input: "{}", Output: "ok", Status: "success", LatencyMs: 12}); err != nil {
 			t.Fatalf("CreateTestRun: %v", err)
 		}
-		run, err := s.GetToolLastSuccessfulTestRun(ctx, tl.ID)
+		run, err := s.GetToolLastSuccessfulTestRunForVersion(ctx, version.ID)
 		if err != nil {
-			t.Fatalf("GetToolLastSuccessfulTestRun: %v", err)
+			t.Fatalf("GetToolLastSuccessfulTestRunForVersion: %v", err)
 		}
 		if run.Status != "success" || run.Output != "ok" || run.LatencyMs != 12 || run.Error != nil {
 			t.Fatalf("test run mismatch: %+v", run)

@@ -10,9 +10,10 @@ services:
       KBOT_CORS_ALLOWED_ORIGINS: ${KBOT_CORS_ALLOWED_ORIGINS:-http://localhost:8080,http://localhost:5173}
       KBOT_DATABASE_URL: postgres://kbot:kbot@db:5432/kbot?sslmode=disable
       KBOT_REDIS_URL: redis://redis:6379/0
-      KBOT_LLM_BASE_URL: ${KBOT_LLM_BASE_URL:-https://api.deepseek.com/v1}
-      KBOT_LLM_API_KEY: ${KBOT_LLM_API_KEY:-}
-      KBOT_LLM_MODEL: ${KBOT_LLM_MODEL:-deepseek-v4-pro}
+      KBOT_LLM_BASE_URL: ${KBOT_LLM_BASE_URL:-https://ark.cn-beijing.volces.com/api/v3}
+      DOUBAO_API_KEY: ${DOUBAO_API_KEY:-}
+      KBOT_LLM_MODEL: ${KBOT_LLM_MODEL:-doubao-seed-2-1-pro-260628}
+      DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
       KBOT_LLM_TIMEOUT_MS: ${KBOT_LLM_TIMEOUT_MS:-120000}
       KBOT_LLM_MAX_RETRIES: ${KBOT_LLM_MAX_RETRIES:-1}
       KBOT_LLM_INPUT_PRICE_PER_MILLION: ${KBOT_LLM_INPUT_PRICE_PER_MILLION:-0}
@@ -65,9 +66,10 @@ services:
       dockerfile: deploy/Dockerfile.migrate
     environment:
       KBOT_DATABASE_URL: postgres://kbot:kbot@db:5432/kbot?sslmode=disable
-      KBOT_LLM_BASE_URL: ${KBOT_LLM_BASE_URL:-https://api.deepseek.com/v1}
-      KBOT_LLM_API_KEY: ${KBOT_LLM_API_KEY:-}
-      KBOT_LLM_MODEL: ${KBOT_LLM_MODEL:-deepseek-v4-pro}
+      KBOT_LLM_BASE_URL: ${KBOT_LLM_BASE_URL:-https://ark.cn-beijing.volces.com/api/v3}
+      DOUBAO_API_KEY: ${DOUBAO_API_KEY:-}
+      KBOT_LLM_MODEL: ${KBOT_LLM_MODEL:-doubao-seed-2-1-pro-260628}
+      DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
       KBOT_LLM_TIMEOUT_MS: ${KBOT_LLM_TIMEOUT_MS:-120000}
       KBOT_LLM_MAX_RETRIES: ${KBOT_LLM_MAX_RETRIES:-1}
       KBOT_LLM_INPUT_PRICE_PER_MILLION: ${KBOT_LLM_INPUT_PRICE_PER_MILLION:-0}

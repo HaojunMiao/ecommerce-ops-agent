@@ -91,15 +91,6 @@ func (s *memToolStore) CreateTestRun(_ context.Context, r *domain.ToolTestRun) e
 	s.testRuns[r.ToolID] = append(s.testRuns[r.ToolID], r)
 	return nil
 }
-func (s *memToolStore) GetToolLastSuccessfulTestRun(_ context.Context, toolID string) (*domain.ToolTestRun, error) {
-	runs := s.testRuns[toolID]
-	for i := len(runs) - 1; i >= 0; i-- {
-		if runs[i].Status == "success" {
-			return runs[i], nil
-		}
-	}
-	return nil, fmt.Errorf("none")
-}
 func (s *memToolStore) GetToolLastSuccessfulTestRunForVersion(_ context.Context, versionID string) (*domain.ToolTestRun, error) {
 	for _, runs := range s.testRuns {
 		for i := len(runs) - 1; i >= 0; i-- {

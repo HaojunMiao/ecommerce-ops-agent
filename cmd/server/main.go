@@ -84,7 +84,8 @@ func main() {
 	endpointPolicy := tool.NewEndpointPolicy(cfg.ToolAllowedHosts, cfg.ToolAllowPrivateNetwork)
 	platformService.Tool.ConfigureEndpointPolicy(endpointPolicy)
 	platformService.ModelConfig.ConfigureEndpointPolicy(endpointPolicy)
-	platformService.ModelConfig.SetCredential(modelconfig.DefaultCredentialRef, cfg.LLMAPIKey)
+	platformService.ModelConfig.SetCredential(modelconfig.DoubaoCredentialRef, cfg.DoubaoAPIKey)
+	platformService.ModelConfig.SetCredential(modelconfig.DeepSeekCredentialRef, cfg.DeepSeekAPIKey)
 	platformService.KB.ConfigureMarkdownAllowedRoots(cfg.KBMarkdownAllowedRoots)
 	if err := platformService.Tool.MigrateLegacyCredentials(ctx); err != nil {
 		log.Fatalf("migrate legacy tool credentials: %v", err)
@@ -105,7 +106,7 @@ func main() {
 		if err := platformService.IAM.EnsureSeedWorkspaceOwners(ctx, cfg.AutoseedAdminEmail); err != nil {
 			log.Printf("autoseed workspace owners: %v", err)
 		}
-		if cfg.LLMAPIKey != "" {
+		if cfg.DoubaoAPIKey != "" {
 			if err := ensureDefaultModelConfigs(ctx, platformService, cfg); err != nil {
 				log.Printf("autoseed model configs: %v", err)
 			} else {
@@ -188,7 +189,7 @@ func ensureDefaultModelConfigs(ctx context.Context, services *platform.Service, 
 	}{
 		{
 			workspaceName: "跨境电商运营平台",
-			configName:    "默认模型配置",
+			configName:    "Doubao",
 		},
 	}
 	for _, seed := range seeds {
@@ -199,7 +200,7 @@ func ensureDefaultModelConfigs(ctx context.Context, services *platform.Service, 
 		if _, err := services.ModelConfig.EnsureConfigVersion(ctx, modelconfig.EnsureConfigRequest{
 			WorkspaceID: workspaceID, Name: seed.configName, ProviderKind: "openai-compatible",
 			BaseURL: cfg.LLMBaseURL, ModelName: cfg.LLMModel,
-			CredentialRef: modelconfig.DefaultCredentialRef,
+			CredentialRef: modelconfig.DoubaoCredentialRef,
 			TimeoutMS:     cfg.LLMTimeoutMS, MaxRetries: cfg.LLMMaxRetries,
 			InputPricePerMillion:       cfg.LLMInputPricePerMillion,
 			OutputPricePerMillion:      cfg.LLMOutputPricePerMillion,

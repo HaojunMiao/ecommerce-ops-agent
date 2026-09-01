@@ -27,10 +27,6 @@ export async function testTool(toolId: string, input: unknown): Promise<ToolTest
   return data
 }
 
-export async function publishTool(toolId: string): Promise<void> {
-  await api.post(`/tools/${toolId}/publish`)
-}
-
 export async function listToolVersions(toolId: string): Promise<ToolVersion[]> {
   const { data } = await api.get<ToolVersion[]>(`/tools/${toolId}/versions`)
   return data ?? []

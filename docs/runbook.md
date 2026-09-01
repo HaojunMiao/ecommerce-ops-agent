@@ -5,7 +5,7 @@
 复制 `.env.example` 为 `.env`，至少填写：
 
 - `KBOT_LLM_BASE_URL`
-- `KBOT_LLM_API_KEY`
+- `DOUBAO_API_KEY`
 - `KBOT_LLM_MODEL`
 - `KBOT_EMBEDDER_BASE_URL`
 - `KBOT_EMBEDDER_API_KEY`（`KBOT_EMBEDDER=openai` 时必填）

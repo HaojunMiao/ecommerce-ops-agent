@@ -50,11 +50,3 @@ func (r *PIIRule) Check(_ context.Context, payload any) Decision {
 	}
 	return Patch(masked, "PII 脱敏")
 }
-
-// Mask 暴露纯函数版脱敏，便于复用与测试。
-func Mask(text string) string {
-	for _, p := range defaultPIIPatterns {
-		text = p.re.ReplaceAllString(text, p.label)
-	}
-	return text
-}

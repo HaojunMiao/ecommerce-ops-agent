@@ -38,17 +38,6 @@ type AgentVersion struct {
 	CreatedAt    time.Time
 }
 
-type ApiKey struct {
-	ID         uuid.UUID
-	UserID     uuid.UUID
-	Name       string
-	Scopes     []string
-	Hash       string
-	LastUsedAt pgtype.Timestamptz
-	ExpiresAt  pgtype.Timestamptz
-	CreatedAt  time.Time
-}
-
 type Approval struct {
 	ID                   uuid.UUID
 	ConversationID       pgtype.UUID
@@ -132,37 +121,6 @@ type ConversationRuntimeConfig struct {
 	ConversationID uuid.UUID
 	ConfigJson     []byte
 	CreatedAt      time.Time
-}
-
-type DeadLetter struct {
-	ID      uuid.UUID
-	JobID   pgtype.UUID
-	Payload []byte
-	Error   string
-	DlqAt   time.Time
-}
-
-type Job struct {
-	ID             uuid.UUID
-	WorkspaceID    string
-	Type           string
-	Payload        []byte
-	Status         string
-	Attempts       int32
-	ScheduledAt    pgtype.Timestamptz
-	StartedAt      pgtype.Timestamptz
-	FinishedAt     pgtype.Timestamptz
-	Error          string
-	IdempotencyKey pgtype.Text
-}
-
-type JobSchedule struct {
-	ID        uuid.UUID
-	Type      string
-	Payload   []byte
-	Cron      string
-	NextRunAt pgtype.Timestamptz
-	Enabled   bool
 }
 
 type Kb struct {
@@ -300,19 +258,6 @@ type PromptVersion struct {
 	CreatedAt       time.Time
 }
 
-type Role struct {
-	ID          uuid.UUID
-	Name        string
-	Permissions []string
-	CreatedAt   time.Time
-}
-
-type RolePermission struct {
-	Role     string
-	Resource string
-	Action   string
-}
-
 type Skill struct {
 	ID          uuid.UUID
 	WorkspaceID string
@@ -321,15 +266,6 @@ type Skill struct {
 	CreatedBy   string
 	CreatedAt   time.Time
 	UpdatedAt   time.Time
-}
-
-type SkillSubscription struct {
-	ID          int64
-	SkillID     uuid.UUID
-	VersionID   uuid.UUID
-	AgentID     string
-	WorkspaceID string
-	CreatedAt   time.Time
 }
 
 type SkillTrigger struct {
@@ -364,18 +300,6 @@ type Tool struct {
 	CreatedBy   string
 	CreatedAt   time.Time
 	UpdatedAt   time.Time
-}
-
-type ToolCall struct {
-	ID            uuid.UUID
-	MessageID     uuid.UUID
-	ToolID        pgtype.UUID
-	ToolVersionID pgtype.UUID
-	Args          []byte
-	Result        []byte
-	LatencyMs     int32
-	Error         string
-	CreatedAt     time.Time
 }
 
 type ToolInvocation struct {
@@ -427,12 +351,6 @@ type User struct {
 	Status       string
 	CreatedAt    time.Time
 	UpdatedAt    time.Time
-}
-
-type UserRole struct {
-	UserID      uuid.UUID
-	RoleID      uuid.UUID
-	WorkspaceID string
 }
 
 type Workspace struct {

@@ -51,7 +51,8 @@ func main() {
 	endpointPolicy := tool.NewEndpointPolicy(cfg.ToolAllowedHosts, cfg.ToolAllowPrivateNetwork)
 	plat.Tool.ConfigureEndpointPolicy(endpointPolicy)
 	plat.ModelConfig.ConfigureEndpointPolicy(endpointPolicy)
-	plat.ModelConfig.SetCredential(modelconfig.DefaultCredentialRef, cfg.LLMAPIKey)
+	plat.ModelConfig.SetCredential(modelconfig.DoubaoCredentialRef, cfg.DoubaoAPIKey)
+	plat.ModelConfig.SetCredential(modelconfig.DeepSeekCredentialRef, cfg.DeepSeekAPIKey)
 	plat.KB.ConfigureMarkdownAllowedRoots(cfg.KBMarkdownAllowedRoots)
 	defer plat.Audit.Close()
 

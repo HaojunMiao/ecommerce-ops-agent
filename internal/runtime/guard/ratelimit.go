@@ -6,38 +6,7 @@ import (
 	"time"
 
 	"github.com/redis/go-redis/v9"
-	"golang.org/x/time/rate"
 )
-
-// RateLimiter 是进程内多维令牌桶（按 user/workspace/api_key/tool_id 等 key 限）。
-// 进程内桶挡瞬时尖峰。
-type RateLimiter struct {
-	mu       sync.Mutex
-	limiters map[string]*rate.Limiter
-	rps      rate.Limit
-	burst    int
-}
-
-// NewRateLimiter 创建限流器：每秒 rps 个、突发 burst 个。
-func NewRateLimiter(rps float64, burst int) *RateLimiter {
-	return &RateLimiter{
-		limiters: make(map[string]*rate.Limiter),
-		rps:      rate.Limit(rps),
-		burst:    burst,
-	}
-}
-
-// Allow 报告 key 是否还有令牌。
-func (l *RateLimiter) Allow(key string) bool {
-	l.mu.Lock()
-	lim, ok := l.limiters[key]
-	if !ok {
-		lim = rate.NewLimiter(l.rps, l.burst)
-		l.limiters[key] = lim
-	}
-	l.mu.Unlock()
-	return lim.Allow()
-}
 
 // RedisBucket 是跨进程共享的简单速率限。
 type RedisBucket struct {

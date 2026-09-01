@@ -74,39 +74,6 @@ func runSkillStoreContract(t *testing.T, newStore func(t *testing.T) skill.Store
 		}
 	})
 
-	t.Run("Subscriptions", func(t *testing.T) {
-		s := newStore(t)
-		ctx := context.Background()
-		sk := &domain.Skill{ID: util.GenerateID(), WorkspaceID: ws, Name: "s", CreatedBy: "u1"}
-		_ = s.CreateSkill(ctx, sk)
-		v := &domain.SkillVersion{ID: util.GenerateID(), SkillID: sk.ID, Version: 1, FrontmatterJSON: "{}", BodyMD: "x", Status: "published", CreatedBy: "u1"}
-		_ = s.CreateSkillVersion(ctx, v)
-
-		agentID := util.GenerateID()
-		if err := s.CreateSubscription(ctx, &domain.SkillSubscription{SkillID: sk.ID, VersionID: v.ID, AgentID: agentID, WorkspaceID: ws}); err != nil {
-			t.Fatalf("CreateSubscription: %v", err)
-		}
-		subs, err := s.ListSubscriptionsForAgent(ctx, agentID)
-		if err != nil {
-			t.Fatalf("ListSubscriptionsForAgent: %v", err)
-		}
-		if len(subs) != 1 || subs[0].WorkspaceID != ws {
-			t.Fatalf("subscriptions mismatch: %+v", subs)
-		}
-		// 用查得的 version_id 解引用,验证指向 v(ID 格式两实现可能不同)。
-		bound, err := s.GetSkillVersion(ctx, subs[0].VersionID)
-		if err != nil || bound.Version != 1 {
-			t.Fatalf("subscription version deref mismatch: %+v err=%v", bound, err)
-		}
-		// 其他 agent 无订阅。
-		other, err := s.ListSubscriptionsForAgent(ctx, util.GenerateID())
-		if err != nil {
-			t.Fatalf("ListSubscriptionsForAgent(other): %v", err)
-		}
-		if len(other) != 0 {
-			t.Fatalf("expected no subs for other agent, got %d", len(other))
-		}
-	})
 }
 
 func TestMemorySkillStore_Contract(t *testing.T) {

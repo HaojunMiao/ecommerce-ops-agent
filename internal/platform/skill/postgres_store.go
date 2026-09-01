@@ -148,46 +148,6 @@ func (s *PostgresStore) UpdateSkillVersionStatus(ctx context.Context, versionID,
 	return nil
 }
 
-// ---- Subscription ----
-
-func (s *PostgresStore) CreateSubscription(ctx context.Context, sub *domain.SkillSubscription) error {
-	skillID, err := uuid.Parse(sub.SkillID)
-	if err != nil {
-		return fmt.Errorf("parse skill id: %w", err)
-	}
-	versionID, err := uuid.Parse(sub.VersionID)
-	if err != nil {
-		return fmt.Errorf("parse version id: %w", err)
-	}
-	if err := s.q.CreateSkillSubscription(ctx, pgstore.CreateSkillSubscriptionParams{
-		SkillID:     skillID,
-		VersionID:   versionID,
-		AgentID:     sub.AgentID,
-		WorkspaceID: sub.WorkspaceID,
-	}); err != nil {
-		return fmt.Errorf("create subscription: %w", err)
-	}
-	return nil
-}
-
-func (s *PostgresStore) ListSubscriptionsForAgent(ctx context.Context, agentID string) ([]*domain.SkillSubscription, error) {
-	rows, err := s.q.ListSubscriptionsForAgent(ctx, agentID)
-	if err != nil {
-		return nil, fmt.Errorf("list subscriptions: %w", err)
-	}
-	out := make([]*domain.SkillSubscription, 0, len(rows))
-	for _, r := range rows {
-		out = append(out, &domain.SkillSubscription{
-			SkillID:     r.SkillID.String(),
-			VersionID:   r.VersionID.String(),
-			AgentID:     r.AgentID,
-			WorkspaceID: r.WorkspaceID,
-			CreatedAt:   r.CreatedAt,
-		})
-	}
-	return out, nil
-}
-
 // ---- 行 → domain ----
 
 func skillFromRow(r pgstore.Skill) *domain.Skill {

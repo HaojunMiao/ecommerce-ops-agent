@@ -13,8 +13,9 @@ import (
 )
 
 const (
-	DefaultTimeoutMS     = 120000
-	DefaultCredentialRef = "KBOT_LLM_API_KEY"
+	DefaultTimeoutMS      = 120000
+	DoubaoCredentialRef   = "DOUBAO_API_KEY"
+	DeepSeekCredentialRef = "DEEPSEEK_API_KEY"
 )
 
 // ModelConfigVersion is the only model-control-plane entity. Every row is immutable.
@@ -141,7 +142,7 @@ func normalizeRequest(req *EnsureConfigRequest) {
 		req.ProviderKind = "openai-compatible"
 	}
 	if req.CredentialRef == "" {
-		req.CredentialRef = DefaultCredentialRef
+		req.CredentialRef = DoubaoCredentialRef
 	}
 	if req.TimeoutMS <= 0 {
 		req.TimeoutMS = DefaultTimeoutMS

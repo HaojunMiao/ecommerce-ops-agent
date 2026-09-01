@@ -106,29 +106,3 @@ func TestPublishRejectsMissingKnowledgeBase(t *testing.T) {
 		t.Fatalf("expected missing KB rejection, got %v", err)
 	}
 }
-
-func TestSpecsForAgent(t *testing.T) {
-	ctx := context.Background()
-	svc := skill.NewService(platform.NewMemorySkillStore(), nil)
-
-	sk, v, _ := svc.CreateSkill(ctx, skill.CreateSkillRequest{
-		WorkspaceID: "w1", SkillMD: sampleSkill, CreatedBy: "u1",
-	})
-	if err := svc.Publish(ctx, v.ID); err != nil {
-		t.Fatalf("publish: %v", err)
-	}
-	if err := svc.Subscribe(ctx, sk.ID, v.ID, "agent-1"); err != nil {
-		t.Fatalf("subscribe: %v", err)
-	}
-
-	specs, err := svc.SpecsForAgent(ctx, "agent-1")
-	if err != nil {
-		t.Fatalf("specs: %v", err)
-	}
-	if len(specs) != 1 || specs[0].Name != "refund-flow" {
-		t.Fatalf("unexpected specs %+v", specs)
-	}
-	if len(specs[0].AllowedTools) != 2 {
-		t.Fatalf("expected 2 allowed tools, got %+v", specs[0].AllowedTools)
-	}
-}

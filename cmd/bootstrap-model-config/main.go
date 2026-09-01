@@ -22,9 +22,10 @@ func main() {
 	cfg := config.Load()
 	workspaceID := flag.String("workspace-id", "", "target workspace UUID")
 	workspaceName := flag.String("workspace-name", envOr("KBOT_MODEL_CONFIG_WORKSPACE", "跨境电商运营平台"), "target workspace name when workspace-id is omitted")
-	configName := flag.String("name", envOr("KBOT_MODEL_CONFIG_NAME", "默认模型配置"), "logical model configuration name")
+	configName := flag.String("name", envOr("KBOT_MODEL_CONFIG_NAME", "Doubao"), "logical model configuration name")
 	baseURL := flag.String("base-url", cfg.LLMBaseURL, "OpenAI-compatible model API base URL")
 	modelName := flag.String("model", cfg.LLMModel, "model name")
+	credentialRef := flag.String("credential-ref", modelconfig.DoubaoCredentialRef, "deployment environment credential reference")
 	timeoutMS := flag.Int("timeout-ms", cfg.LLMTimeoutMS, "request timeout in milliseconds")
 	maxRetries := flag.Int("max-retries", cfg.LLMMaxRetries, "maximum model retries")
 	inputPrice := flag.Float64("input-price-per-million", cfg.LLMInputPricePerMillion, "input token price per million")
@@ -33,8 +34,12 @@ func main() {
 	createdBy := flag.String("created-by", "bootstrap-model-config", "audit actor")
 	flag.Parse()
 
-	if strings.TrimSpace(cfg.LLMAPIKey) == "" {
-		log.Fatal("KBOT_LLM_API_KEY is required so the created credential_ref is callable")
+	credentialConfigured := strings.TrimSpace(cfg.DoubaoAPIKey) != ""
+	if strings.TrimSpace(*credentialRef) == modelconfig.DeepSeekCredentialRef {
+		credentialConfigured = strings.TrimSpace(cfg.DeepSeekAPIKey) != ""
+	}
+	if !credentialConfigured {
+		log.Fatalf("%s is required so the created credential_ref is callable", strings.TrimSpace(*credentialRef))
 	}
 	ctx := context.Background()
 	db, err := postgres.Open(ctx, cfg.DatabaseURL)
@@ -68,7 +73,7 @@ func main() {
 	service := modelconfig.NewService(modelconfig.NewPostgresStore(db))
 	version, err := service.EnsureConfigVersion(ctx, modelconfig.EnsureConfigRequest{
 		WorkspaceID: resolvedWorkspaceID, Name: strings.TrimSpace(*configName), ProviderKind: "openai-compatible",
-		BaseURL: strings.TrimSpace(*baseURL), ModelName: strings.TrimSpace(*modelName), CredentialRef: modelconfig.DefaultCredentialRef,
+		BaseURL: strings.TrimSpace(*baseURL), ModelName: strings.TrimSpace(*modelName), CredentialRef: strings.TrimSpace(*credentialRef),
 		TimeoutMS: *timeoutMS, MaxRetries: *maxRetries,
 		InputPricePerMillion: *inputPrice, OutputPricePerMillion: *outputPrice,
 		CachedInputPricePerMillion: *cachedInputPrice,

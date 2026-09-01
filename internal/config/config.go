@@ -23,9 +23,10 @@ type Config struct {
 	KBMarkdownAllowedRoots  []string
 
 	// LLM
-	LLMBaseURL string // OpenAI 兼容网关
-	LLMAPIKey  string // 模型密钥；模型配置版本通过 credential_ref 在运行时引用
-	LLMModel   string // 主对话模型（需支持工具调用）
+	LLMBaseURL     string // OpenAI 兼容网关
+	DoubaoAPIKey   string // 豆包模型密钥；ModelConfigVersion 通过 DOUBAO_API_KEY 引用
+	LLMModel       string // 主对话模型（需支持工具调用）
+	DeepSeekAPIKey string // 可选的 DeepSeek 凭据，供独立 ModelConfigVersion 引用
 	// 下列非密钥参数会固化进不可变模型配置版本，配置变化时创建新版本。
 	LLMTimeoutMS                  int
 	LLMMaxRetries                 int
@@ -78,9 +79,10 @@ func Load() Config {
 		ToolAllowedHosts:        splitList(getenv("KBOT_TOOL_ALLOWED_HOSTS", "crossborder-sim")),
 		ToolAllowPrivateNetwork: strings.EqualFold(getenv("KBOT_TOOL_ALLOW_PRIVATE_NETWORK", "false"), "true"),
 		KBMarkdownAllowedRoots:  splitList(getenv("KBOT_KB_MARKDOWN_ALLOWED_ROOTS", "projects")),
-		LLMBaseURL:              getenv("KBOT_LLM_BASE_URL", "https://api.deepseek.com/v1"),
-		LLMAPIKey:               os.Getenv("KBOT_LLM_API_KEY"), // 可选：未配置时仅可使用不需要鉴权的测试模型
-		LLMModel:                getenv("KBOT_LLM_MODEL", "deepseek-v4-pro"),
+		LLMBaseURL:              getenv("KBOT_LLM_BASE_URL", "https://ark.cn-beijing.volces.com/api/v3"),
+		DoubaoAPIKey:            os.Getenv("DOUBAO_API_KEY"), // 可选：未配置时仅可使用其他已注册的模型凭据
+		LLMModel:                getenv("KBOT_LLM_MODEL", "doubao-seed-2-1-pro-260628"),
+		DeepSeekAPIKey:          os.Getenv("DEEPSEEK_API_KEY"),
 		LLMTimeoutMS:            getenvInt("KBOT_LLM_TIMEOUT_MS", 120000),
 		LLMMaxRetries:           getenvInt("KBOT_LLM_MAX_RETRIES", 1),
 		LLMInputPricePerMillion: getenvNumber("KBOT_LLM_INPUT_PRICE_PER_MILLION", 0),

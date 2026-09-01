@@ -233,15 +233,3 @@ export interface AuditLog {
   user_agent?: string | null
   created_at: string
 }
-
-// ---- Approval ----
-export interface Approval {
-  id: string
-  conversation_id: string
-  action: string
-  payload: string
-  status: string
-  approver_id?: string
-  created_at: string
-  resolved_at?: string | null
-}

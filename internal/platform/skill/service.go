@@ -49,9 +49,6 @@ type Store interface {
 	GetSkillVersion(ctx context.Context, versionID string) (*domain.SkillVersion, error)
 	ListSkillVersions(ctx context.Context, skillID string) ([]*domain.SkillVersion, error)
 	UpdateSkillVersionStatus(ctx context.Context, versionID, status string) error
-
-	CreateSubscription(ctx context.Context, sub *domain.SkillSubscription) error
-	ListSubscriptionsForAgent(ctx context.Context, agentID string) ([]*domain.SkillSubscription, error)
 }
 
 type skillBundleStore interface {
@@ -210,41 +207,6 @@ func (s *Service) Publish(ctx context.Context, versionID string) error {
 	return s.store.UpdateSkillVersionStatus(ctx, versionID, "published")
 }
 
-// Subscribe 把某技能版本订阅到一个 Agent。
-func (s *Service) Subscribe(ctx context.Context, skillID, versionID, agentID string) error {
-	sk, err := s.store.GetSkill(ctx, skillID)
-	if err != nil {
-		return fmt.Errorf("get skill: %w", err)
-	}
-	v, err := s.store.GetSkillVersion(ctx, versionID)
-	if err != nil {
-		return fmt.Errorf("get skill version: %w", err)
-	}
-	if v.SkillID != skillID {
-		return fmt.Errorf("skill version does not belong to skill")
-	}
-	if v.Status != "published" {
-		return fmt.Errorf("skill version must be published")
-	}
-	existing, err := s.store.ListSubscriptionsForAgent(ctx, agentID)
-	if err != nil {
-		return fmt.Errorf("list subscriptions: %w", err)
-	}
-	for _, sub := range existing {
-		if sub.SkillID == skillID && sub.VersionID == versionID {
-			return nil
-		}
-	}
-	sub := &domain.SkillSubscription{
-		SkillID:     skillID,
-		VersionID:   versionID,
-		AgentID:     agentID,
-		WorkspaceID: sk.WorkspaceID,
-		CreatedAt:   time.Now(),
-	}
-	return s.store.CreateSubscription(ctx, sub)
-}
-
 // GetSpec 把某技能版本解析为 Runtime 用的 Spec。
 func (s *Service) GetSpec(ctx context.Context, versionID string) (*Spec, error) {
 	v, err := s.store.GetSkillVersion(ctx, versionID)
@@ -267,23 +229,6 @@ func (s *Service) GetSpec(ctx context.Context, versionID string) (*Spec, error) 
 		DisableModelInvocation: fm.DisableModelInvocation,
 		RequiresNetwork:        fm.RequiresNetwork, Status: v.Status,
 	}, nil
-}
-
-// SpecsForAgent 返回某 Agent 订阅的所有技能 Spec（供 L1 元数据注入）。
-func (s *Service) SpecsForAgent(ctx context.Context, agentID string) ([]*Spec, error) {
-	subs, err := s.store.ListSubscriptionsForAgent(ctx, agentID)
-	if err != nil {
-		return nil, err
-	}
-	var specs []*Spec
-	for _, sub := range subs {
-		spec, err := s.GetSpec(ctx, sub.VersionID)
-		if err != nil {
-			return nil, fmt.Errorf("get subscribed skill version %s: %w", sub.VersionID, err)
-		}
-		specs = append(specs, spec)
-	}
-	return specs, nil
 }
 
 // ListSkills 透传。

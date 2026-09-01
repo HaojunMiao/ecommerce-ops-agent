@@ -38,6 +38,7 @@ func TestValidateAcceptsHardenedProductionConfig(t *testing.T) {
 }
 
 func TestLoadModelVersionParameters(t *testing.T) {
+	t.Setenv("DEEPSEEK_API_KEY", "deepseek-secret")
 	t.Setenv("KBOT_LLM_TIMEOUT_MS", "90000")
 	t.Setenv("KBOT_LLM_MAX_RETRIES", "3")
 	t.Setenv("KBOT_LLM_INPUT_PRICE_PER_MILLION", "1.25")
@@ -50,6 +51,9 @@ func TestLoadModelVersionParameters(t *testing.T) {
 	}
 	if cfg.LLMInputPricePerMillion != 1.25 || cfg.LLMOutputPricePerMillion != 2.5 || cfg.LLMCachedInputPricePerMillion != 0.25 {
 		t.Fatalf("model prices not loaded: %+v", cfg)
+	}
+	if cfg.DeepSeekAPIKey != "deepseek-secret" {
+		t.Fatal("independent DeepSeek credential was not loaded")
 	}
 }
 
@@ -71,7 +75,7 @@ func TestValidateRejectsInvalidModelRuntimeParameters(t *testing.T) {
 
 func TestLoadUsesIndependentEmbeddingConfiguration(t *testing.T) {
 	t.Setenv("KBOT_LLM_BASE_URL", "https://chat.example/v1")
-	t.Setenv("KBOT_LLM_API_KEY", "chat-secret")
+	t.Setenv("DOUBAO_API_KEY", "chat-secret")
 	t.Setenv("KBOT_EMBEDDER", "openai")
 	t.Setenv("KBOT_EMBEDDER_BASE_URL", "https://embedding.example/v1")
 	t.Setenv("KBOT_EMBEDDER_API_KEY", "embedding-secret")
@@ -82,7 +86,7 @@ func TestLoadUsesIndependentEmbeddingConfiguration(t *testing.T) {
 	if cfg.EmbedderBaseURL != "https://embedding.example/v1" || cfg.EmbedderAPIKey != "embedding-secret" {
 		t.Fatalf("embedding config was not loaded independently: %+v", cfg)
 	}
-	if cfg.LLMBaseURL != "https://chat.example/v1" || cfg.LLMAPIKey != "chat-secret" {
+	if cfg.LLMBaseURL != "https://chat.example/v1" || cfg.DoubaoAPIKey != "chat-secret" {
 		t.Fatal("embedding config unexpectedly changed chat config")
 	}
 }

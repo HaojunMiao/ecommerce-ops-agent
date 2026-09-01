@@ -2,6 +2,7 @@ package guard
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 )
@@ -42,7 +43,8 @@ func TestGuard_OnLLMCall_RateLimited(t *testing.T) {
 		t.Fatalf("2nd: %v", err)
 	}
 	err := g.OnLLMCall(ctx)
-	if !IsBlocked(err) {
+	var blocked *ErrBlocked
+	if !errors.As(err, &blocked) {
 		t.Fatalf("3rd should be blocked, got %v", err)
 	}
 }

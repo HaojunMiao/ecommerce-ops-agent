@@ -198,13 +198,12 @@ func (h *Handler) Routes() http.Handler {
 			r.Get("/model-config-versions", modelHandler.ListConfigVersions)
 
 			// Skills。
-			skillHandler := v1.NewSkillHandler(h.platform.Skill, h.platform.Agent)
+			skillHandler := v1.NewSkillHandler(h.platform.Skill)
 			r.Post("/skills", skillHandler.CreateSkill)
 			r.Get("/skills", skillHandler.ListSkills)
 			r.Get("/skills/{skill_id}/versions", skillHandler.ListVersions)
 			r.Post("/skills/{skill_id}/versions", skillHandler.CreateVersion)
 			r.Post("/skills/{skill_id}/publish", skillHandler.Publish)
-			r.Post("/skills/{skill_id}/subscribe", skillHandler.Subscribe)
 
 			// Audit：保留数据库内的运行审计。
 			auditHandler := v1.NewAuditHandler(h.platform.Audit)

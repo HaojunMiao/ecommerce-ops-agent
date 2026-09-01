@@ -208,18 +208,6 @@ func (s *MemoryToolStore) CreateTestRun(ctx context.Context, testRun *domain.Too
 	return nil
 }
 
-func (s *MemoryToolStore) GetToolLastSuccessfulTestRun(ctx context.Context, toolID string) (*domain.ToolTestRun, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	runs := s.testRuns[toolID]
-	for i := len(runs) - 1; i >= 0; i-- {
-		if runs[i].Status == "success" {
-			return runs[i], nil
-		}
-	}
-	return nil, fmt.Errorf("no successful test run")
-}
-
 func (s *MemoryToolStore) GetToolLastSuccessfulTestRunForVersion(_ context.Context, versionID string) (*domain.ToolTestRun, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -456,7 +444,6 @@ type MemorySkillStore struct {
 	mu       sync.RWMutex
 	skills   map[string]*domain.Skill
 	versions map[string]*domain.SkillVersion
-	subs     map[string][]*domain.SkillSubscription // agentID -> subscriptions
 }
 
 // NewMemorySkillStore 创建技能内存存储。
@@ -464,7 +451,6 @@ func NewMemorySkillStore() *MemorySkillStore {
 	return &MemorySkillStore{
 		skills:   make(map[string]*domain.Skill),
 		versions: make(map[string]*domain.SkillVersion),
-		subs:     make(map[string][]*domain.SkillSubscription),
 	}
 }
 
@@ -545,17 +531,4 @@ func (s *MemorySkillStore) UpdateSkillVersionStatus(ctx context.Context, version
 	}
 	v.Status = status
 	return nil
-}
-
-func (s *MemorySkillStore) CreateSubscription(ctx context.Context, sub *domain.SkillSubscription) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.subs[sub.AgentID] = append(s.subs[sub.AgentID], sub)
-	return nil
-}
-
-func (s *MemorySkillStore) ListSubscriptionsForAgent(ctx context.Context, agentID string) ([]*domain.SkillSubscription, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	return s.subs[agentID], nil
 }

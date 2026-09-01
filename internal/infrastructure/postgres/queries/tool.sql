@@ -72,8 +72,5 @@ INSERT INTO tool_test_runs (id, tool_id, tool_version_id, input, output, status,
 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, now())
 RETURNING *;
 
--- name: GetToolLastSuccessfulTestRun :one
-SELECT * FROM tool_test_runs WHERE tool_id = $1 AND status = 'success' ORDER BY created_at DESC LIMIT 1;
-
 -- name: GetToolLastSuccessfulTestRunForVersion :one
 SELECT * FROM tool_test_runs WHERE tool_version_id = $1 AND status = 'success' ORDER BY created_at DESC LIMIT 1;

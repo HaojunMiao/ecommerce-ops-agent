@@ -22,7 +22,7 @@ func TestConfigRejectsPrivateEndpoint(t *testing.T) {
 func TestImmutableConfigVersionAndEnvironmentCredential(t *testing.T) {
 	ctx := context.Background()
 	svc := modelconfig.NewService(modelconfig.NewMemoryStore())
-	svc.SetCredential(modelconfig.DefaultCredentialRef, "sk-first")
+	svc.SetCredential(modelconfig.DoubaoCredentialRef, "sk-first")
 	req := modelconfig.EnsureConfigRequest{
 		WorkspaceID: "w1", Name: "main", BaseURL: "https://example.com/v1", ModelName: "model-a",
 		InputPricePerMillion: 1.25, OutputPricePerMillion: 2.5, CachedInputPricePerMillion: .25,
@@ -47,7 +47,7 @@ func TestImmutableConfigVersionAndEnvironmentCredential(t *testing.T) {
 	if err != nil || resolved.APIKey != "sk-first" || resolved.Model != "model-a" {
 		t.Fatalf("unexpected resolved config: %+v err=%v", resolved, err)
 	}
-	svc.SetCredential(modelconfig.DefaultCredentialRef, "sk-rotated")
+	svc.SetCredential(modelconfig.DoubaoCredentialRef, "sk-rotated")
 	resolved, err = svc.ResolveConfig(ctx, v1.ID)
 	if err != nil || resolved.APIKey != "sk-rotated" {
 		t.Fatalf("environment credential rotation did not take effect: %+v err=%v", resolved, err)

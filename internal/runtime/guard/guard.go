@@ -145,12 +145,6 @@ func (g *Guard) OnToolCall(ctx context.Context, toolName string) error {
 	return err
 }
 
-// IsBlocked 报告 err 是否是 Guard 拦截。
-func IsBlocked(err error) bool {
-	_, ok := err.(*ErrBlocked)
-	return ok
-}
-
 func summarize(payload any) string {
 	if s, ok := payload.(string); ok {
 		if len(s) > 500 {

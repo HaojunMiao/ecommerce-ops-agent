@@ -295,21 +295,6 @@ func (s *PostgresStore) GetToolLastSuccessfulTestRunForVersion(ctx context.Conte
 	return testRunFromRow(row), nil
 }
 
-func (s *PostgresStore) GetToolLastSuccessfulTestRun(ctx context.Context, toolID string) (*domain.ToolTestRun, error) {
-	id, err := uuid.Parse(toolID)
-	if err != nil {
-		return nil, fmt.Errorf("parse tool id: %w", err)
-	}
-	row, err := s.q.GetToolLastSuccessfulTestRun(ctx, id)
-	if err != nil {
-		if err == pgx.ErrNoRows {
-			return nil, fmt.Errorf("no successful test run")
-		}
-		return nil, fmt.Errorf("get last test run: %w", err)
-	}
-	return testRunFromRow(row), nil
-}
-
 // ---- 行 → domain ----
 
 func toolFromRow(r pgstore.Tool) *domain.Tool {

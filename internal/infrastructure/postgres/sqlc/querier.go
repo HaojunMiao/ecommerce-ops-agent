@@ -24,17 +24,12 @@ type Querier interface {
 	CreateApproval(ctx context.Context, arg CreateApprovalParams) (Approval, error)
 	CreateCheckpoint(ctx context.Context, arg CreateCheckpointParams) error
 	CreateConversation(ctx context.Context, arg CreateConversationParams) (Conversation, error)
-	CreateDeadLetter(ctx context.Context, arg CreateDeadLetterParams) (DeadLetter, error)
 	CreateIngestJob(ctx context.Context, arg CreateIngestJobParams) error
-	// Jobs:jobs / job_schedules / dead_letters
-	CreateJob(ctx context.Context, arg CreateJobParams) (Job, error)
-	CreateJobSchedule(ctx context.Context, arg CreateJobScheduleParams) (JobSchedule, error)
 	CreateKB(ctx context.Context, arg CreateKBParams) (Kb, error)
 	CreateMessage(ctx context.Context, arg CreateMessageParams) (Message, error)
 	CreatePrompt(ctx context.Context, arg CreatePromptParams) (Prompt, error)
 	CreatePromptVersion(ctx context.Context, arg CreatePromptVersionParams) (PromptVersion, error)
 	CreateSkill(ctx context.Context, arg CreateSkillParams) (Skill, error)
-	CreateSkillSubscription(ctx context.Context, arg CreateSkillSubscriptionParams) error
 	CreateSkillVersion(ctx context.Context, arg CreateSkillVersionParams) (SkillVersion, error)
 	CreateSkillWithVersion(ctx context.Context, arg CreateSkillWithVersionParams) error
 	CreateTool(ctx context.Context, arg CreateToolParams) (Tool, error)
@@ -59,22 +54,20 @@ type Querier interface {
 	// Conversation:conversations / messages(agent.Store 的会话部分)
 	GetConversation(ctx context.Context, id uuid.UUID) (Conversation, error)
 	GetDocument(ctx context.Context, id uuid.UUID) (KbDocument, error)
-	GetJob(ctx context.Context, id uuid.UUID) (Job, error)
 	// KB:kbs / kb_documents / kb_ingest_jobs / connector_instances
 	// kb_chunks 的写入与向量/全文检索由 runtime/retriever 的 PostgreSQL 实现负责。
 	GetKB(ctx context.Context, id uuid.UUID) (Kb, error)
-	// Prompt:不可变模板版本。
+	// Prompt:不可变模板版本。发布由 AgentEnv 统一管理。
 	GetPrompt(ctx context.Context, id uuid.UUID) (Prompt, error)
 	GetPromptVersion(ctx context.Context, id uuid.UUID) (PromptVersion, error)
 	GetPromptVersionByNumber(ctx context.Context, arg GetPromptVersionByNumberParams) (PromptVersion, error)
-	// Skill:skills / skill_versions / skill_subscriptions
+	// Skill:skills / skill_versions
 	GetSkill(ctx context.Context, id uuid.UUID) (Skill, error)
 	GetSkillVersion(ctx context.Context, id uuid.UUID) (SkillVersion, error)
 	// Tool:tools / tool_versions / tool_test_runs
 	GetTool(ctx context.Context, id uuid.UUID) (Tool, error)
 	// 「当前版本」= 版本号最大者(memory 版 CreateToolVersion 把最新创建设为 current,版本号单调递增故等价)。
 	GetToolCurrentVersion(ctx context.Context, toolID uuid.UUID) (ToolVersion, error)
-	GetToolLastSuccessfulTestRun(ctx context.Context, toolID uuid.UUID) (ToolTestRun, error)
 	GetToolLastSuccessfulTestRunForVersion(ctx context.Context, toolVersionID uuid.UUID) (ToolTestRun, error)
 	GetToolLatestPublishedVersion(ctx context.Context, toolID uuid.UUID) (ToolVersion, error)
 	GetToolVersion(ctx context.Context, id uuid.UUID) (ToolVersion, error)
@@ -92,19 +85,16 @@ type Querier interface {
 	ListConnectors(ctx context.Context, kbID uuid.UUID) ([]ConnectorInstance, error)
 	ListConversations(ctx context.Context, arg ListConversationsParams) ([]Conversation, error)
 	ListDocuments(ctx context.Context, kbID uuid.UUID) ([]KbDocument, error)
-	ListEnabledSchedules(ctx context.Context) ([]JobSchedule, error)
 	ListIngestJobs(ctx context.Context, kbID uuid.UUID) ([]KbIngestJob, error)
 	ListKBs(ctx context.Context, workspaceID string) ([]Kb, error)
 	ListLegacyToolAuthVersions(ctx context.Context) ([]ToolVersion, error)
 	ListMessages(ctx context.Context, conversationID uuid.UUID) ([]Message, error)
 	ListPendingApprovals(ctx context.Context, workspaceID string) ([]Approval, error)
-	ListPendingJobs(ctx context.Context, limit int32) ([]Job, error)
 	ListPromptVersions(ctx context.Context, promptID uuid.UUID) ([]PromptVersion, error)
 	ListPrompts(ctx context.Context, workspaceID string) ([]Prompt, error)
 	ListReadyApprovalResumes(ctx context.Context, limit int32) ([]Approval, error)
 	ListSkillVersions(ctx context.Context, skillID uuid.UUID) ([]SkillVersion, error)
 	ListSkills(ctx context.Context, workspaceID string) ([]Skill, error)
-	ListSubscriptionsForAgent(ctx context.Context, agentID string) ([]SkillSubscription, error)
 	ListToolVersions(ctx context.Context, toolID uuid.UUID) ([]ToolVersion, error)
 	ListTools(ctx context.Context, workspaceID string) ([]Tool, error)
 	ListUserWorkspaces(ctx context.Context, arg ListUserWorkspacesParams) ([]Workspace, error)
@@ -121,7 +111,6 @@ type Querier interface {
 	SetKBIndexing(ctx context.Context, arg SetKBIndexingParams) error
 	SetUserRole(ctx context.Context, arg SetUserRoleParams) error
 	UpdateIngestJob(ctx context.Context, arg UpdateIngestJobParams) error
-	UpdateJobStatus(ctx context.Context, arg UpdateJobStatusParams) error
 	UpdateKBChunkingConfig(ctx context.Context, arg UpdateKBChunkingConfigParams) error
 	UpdateKBEmbeddingModel(ctx context.Context, arg UpdateKBEmbeddingModelParams) error
 	UpdateKBStatus(ctx context.Context, arg UpdateKBStatusParams) error

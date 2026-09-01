@@ -32,24 +32,6 @@ export async function promoteAgentVersion(agentId: string, versionId: string, en
   await api.post(`/agents/${agentId}/promote`, { version_id: versionId, env })
 }
 
-export interface ChatResult {
-  content: string
-  conversation_id?: string
-  trace_id?: string
-  approval_id?: string
-  status?: 'completed' | 'awaiting_approval'
-}
-
-// 同步聊天:返回完整回答(底层走引擎流式后聚合)。conversationId 为空则后端新建会话。
-export async function chat(agentId: string, message: string, conversationId?: string, agentEnv = 'dev'): Promise<ChatResult> {
-  const { data } = await api.post<ChatResult>(`/agents/${agentId}/chat`, {
-    message,
-    conversation_id: conversationId,
-    agent_env: agentEnv,
-  })
-  return data
-}
-
 export interface AgentStreamEvent<T = unknown> {
   type: string
   data?: T

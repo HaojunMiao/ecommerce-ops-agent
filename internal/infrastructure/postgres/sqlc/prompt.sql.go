@@ -94,7 +94,7 @@ const getPrompt = `-- name: GetPrompt :one
 SELECT id, workspace_id, name, category, created_by, created_at, updated_at FROM prompts WHERE id = $1 LIMIT 1
 `
 
-// Prompt:不可变模板版本。
+// Prompt:不可变模板版本。发布由 AgentEnv 统一管理。
 func (q *Queries) GetPrompt(ctx context.Context, id uuid.UUID) (Prompt, error) {
 	row := q.db.QueryRow(ctx, getPrompt, id)
 	var i Prompt

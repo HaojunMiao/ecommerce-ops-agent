@@ -11,7 +11,7 @@
 ```bash
 make bootstrap-model-config \
   MODEL_CONFIG_WORKSPACE='跨境电商运营平台' \
-  MODEL_CONFIG_NAME='默认模型配置'
+  MODEL_CONFIG_NAME='Doubao'
 ```
 
 容器编排平台也可直接运行 migrate 镜像内的 `/ecommerce-ops-bootstrap-model-config`，并用 `-workspace-id` 指定 Workspace。命令幂等：配置未变时返回同一版本，Base URL、模型名或运行参数改变时追加新版本。

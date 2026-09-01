@@ -4,20 +4,18 @@ import (
 	"net/http"
 
 	"github.com/HaojunMiao/ecommerce-ops-agent/internal/api/middleware"
-	"github.com/HaojunMiao/ecommerce-ops-agent/internal/platform/agent"
 	"github.com/HaojunMiao/ecommerce-ops-agent/internal/platform/skill"
 	"github.com/go-chi/chi/v5"
 )
 
 // SkillHandler 技能处理器
 type SkillHandler struct {
-	svc    *skill.Service
-	agents *agent.Service
+	svc *skill.Service
 }
 
 // NewSkillHandler 创建技能处理器
-func NewSkillHandler(svc *skill.Service, agents *agent.Service) *SkillHandler {
-	return &SkillHandler{svc: svc, agents: agents}
+func NewSkillHandler(svc *skill.Service) *SkillHandler {
+	return &SkillHandler{svc: svc}
 }
 
 // CreateSkill 从 SKILL.md 创建技能（含 v1 draft）
@@ -119,39 +117,6 @@ func (h *SkillHandler) Publish(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "published"})
-}
-
-// Subscribe 把技能版本订阅到 Agent
-func (h *SkillHandler) Subscribe(w http.ResponseWriter, r *http.Request) {
-	skillID := chi.URLParam(r, "skill_id")
-	workspaceID := middleware.GetWorkspaceIDFromContext(r.Context())
-	userID := middleware.GetUserIDFromContext(r.Context())
-	var body struct {
-		VersionID string `json:"version_id"`
-		AgentID   string `json:"agent_id"`
-	}
-	if err := decodeJSON(w, r, &body); err != nil {
-		http.Error(w, "invalid request body", http.StatusBadRequest)
-		return
-	}
-	if h.agents == nil {
-		http.Error(w, "agent version service is not configured", http.StatusInternalServerError)
-		return
-	}
-	if err := h.svc.ValidateVersion(r.Context(), skillID, body.VersionID, workspaceID, true); err != nil {
-		http.Error(w, err.Error(), http.StatusNotFound)
-		return
-	}
-	agentVersion, err := h.agents.AttachSkillVersion(r.Context(), body.AgentID, workspaceID, body.VersionID, userID)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
-	}
-	if err := h.svc.Subscribe(r.Context(), skillID, body.VersionID, body.AgentID); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]any{"status": "subscribed", "agent_version": agentVersion})
 }
 
 // ListSkills 列出技能

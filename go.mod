@@ -13,6 +13,9 @@ require (
 	github.com/go-chi/chi/v5 v5.3.0
 	github.com/go-chi/cors v1.2.1
 
+	// 工具
+	github.com/go-ego/gse v1.0.2
+
 	// 身份与权限
 	github.com/golang-jwt/jwt/v5 v5.2.2
 
@@ -29,10 +32,7 @@ require (
 	go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp v1.44.0
 	go.opentelemetry.io/otel/sdk v1.44.0
 	golang.org/x/crypto v0.53.0
-
-	// 工具
-	github.com/go-ego/gse v1.0.2
-	golang.org/x/time v0.5.0
+	golang.org/x/time v0.5.0 // indirect
 )
 
 require (
@@ -41,7 +41,6 @@ require (
 	github.com/golang-migrate/migrate/v4 v4.17.0
 	github.com/google/uuid v1.6.0
 	github.com/ory/dockertest/v3 v3.10.0
-	github.com/pgvector/pgvector-go v0.2.2
 	github.com/prometheus/client_golang v1.19.1
 	github.com/swaggo/swag v1.16.6
 	github.com/xeipuuv/gojsonschema v1.2.0

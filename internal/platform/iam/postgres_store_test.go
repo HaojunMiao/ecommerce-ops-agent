@@ -23,7 +23,7 @@ func TestPostgresIAMStore_Contract(t *testing.T) {
 	runIAMStoreContract(t, func(t *testing.T) iam.Store {
 		// 每个子用例清空相关表,保证用例间隔离。
 		if _, err := pool.Exec(context.Background(),
-			`TRUNCATE users, workspaces, workspace_members, roles, user_roles, api_keys CASCADE`); err != nil {
+			`TRUNCATE users, workspaces, workspace_members CASCADE`); err != nil {
 			t.Fatalf("truncate: %v", err)
 		}
 		return iam.NewPostgresStore(pool, pgstore.New(pool))

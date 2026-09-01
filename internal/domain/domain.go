@@ -148,92 +148,6 @@ type ToolCall struct {
 	CreatedAt     time.Time `json:"created_at"`
 }
 
-// === 数据分级（§4.6 / §7）===
-
-// Classification 数据分级。顺序：public < internal < confidential < secret。
-type Classification string
-
-const (
-	ClassPublic       Classification = "public"
-	ClassInternal     Classification = "internal"
-	ClassConfidential Classification = "confidential"
-	ClassSecret       Classification = "secret"
-)
-
-// Level 返回分级的数值序（越高越敏感），便于比较。
-func (c Classification) Level() int {
-	switch c {
-	case ClassPublic:
-		return 0
-	case ClassInternal:
-		return 1
-	case ClassConfidential:
-		return 2
-	case ClassSecret:
-		return 3
-	default:
-		return 1 // 默认 internal
-	}
-}
-
-// GreaterThan 报告 c 是否比 other 更敏感。
-func (c Classification) GreaterThan(other Classification) bool {
-	return c.Level() > other.Level()
-}
-
-// === Eval 门禁（§4.12）===
-
-// EvalDataset 评估集。
-type EvalDataset struct {
-	ID          string    `json:"id"`
-	WorkspaceID string    `json:"workspace_id"`
-	Name        string    `json:"name"`
-	TargetKind  string    `json:"target_kind"` // prompt / skill / agent
-	CreatedAt   time.Time `json:"created_at"`
-}
-
-// EvalCase 评估用例。
-type EvalCase struct {
-	ID        string    `json:"id"`
-	DatasetID string    `json:"dataset_id"`
-	Input     string    `json:"input"`
-	Expected  string    `json:"expected"` // 期望关键词 / 期望答案（按 Judge 解释）
-	Metadata  string    `json:"metadata"` // JSON：来源、标签等
-	CreatedAt time.Time `json:"created_at"`
-}
-
-// EvalRun 一次评估运行。
-type EvalRun struct {
-	ID         string     `json:"id"`
-	DatasetID  string     `json:"dataset_id"`
-	TargetID   string     `json:"target_id"`
-	JudgeID    string     `json:"judge_id"`
-	Status     string     `json:"status"` // running / passed / failed
-	PassRate   float64    `json:"pass_rate"`
-	Threshold  float64    `json:"threshold"`
-	CreatedAt  time.Time  `json:"created_at"`
-	FinishedAt *time.Time `json:"finished_at,omitempty"`
-}
-
-// EvalScore 单用例得分（可多维度）。
-type EvalScore struct {
-	RunID     string  `json:"run_id"`
-	CaseID    string  `json:"case_id"`
-	Dimension string  `json:"dimension"`
-	Score     float64 `json:"score"`
-	Reason    string  `json:"reason"`
-}
-
-// Approval 人在环审批请求（敏感工具调用）。
-type Approval struct {
-	ID         string    `json:"id"`
-	Action     string    `json:"action"`
-	Payload    string    `json:"payload"`
-	Status     string    `json:"status"` // pending / approved / rejected
-	ApproverID string    `json:"approver_id,omitempty"`
-	CreatedAt  time.Time `json:"created_at"`
-}
-
 // === 审计 ===
 
 // AuditLog 审计日志实体
@@ -332,15 +246,6 @@ type SkillVersion struct {
 	Status          string    `json:"status"`           // draft / published
 	CreatedBy       string    `json:"created_by"`
 	CreatedAt       time.Time `json:"created_at"`
-}
-
-// SkillSubscription 技能订阅（订阅到 agent 或 workspace）。
-type SkillSubscription struct {
-	SkillID     string    `json:"skill_id"`
-	VersionID   string    `json:"version_id"`
-	AgentID     string    `json:"agent_id,omitempty"`
-	WorkspaceID string    `json:"workspace_id,omitempty"`
-	CreatedAt   time.Time `json:"created_at"`
 }
 
 // === Knowledge Base ===

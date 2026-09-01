@@ -15,7 +15,7 @@ CROSSBORDER_ADMIN_EMAIL ?= admin@ecommerce-ops.local
 CROSSBORDER_KBOT_PASSWORD ?= admin12345
 
 .PHONY: help bootstrap configure-embedding up down logs ps up-lite down-lite logs-lite ps-lite seed seed-lite migrate migrate-lite \
-		bootstrap-model-config bootstrap-model-config-lite crossborder-bootstrap-model-config sqlc-generate openapi test-integration \
+		bootstrap-model-config bootstrap-model-config-lite bootstrap-deepseek-model-config crossborder-bootstrap-model-config sqlc-generate openapi test-integration \
 		rag-eval-build rag-eval-offline rag-eval-reranker rag-eval-answer-smoke rag-eval-up rag-eval-system rag-eval-down \
 		crossborder-build crossborder-test crossborder-up crossborder-install crossborder-install-isolated \
 		crossborder-model-smoke crossborder-model-smoke-isolated crossborder-e2e crossborder-e2e-isolated crossborder-logs crossborder-down \
@@ -118,7 +118,7 @@ migrate-lite: ## 在轻量开发环境执行数据库迁移
 	$(LITE_COMPOSE) run --rm --build migrate -up
 
 MODEL_CONFIG_WORKSPACE ?= 跨境电商运营平台
-MODEL_CONFIG_NAME ?= 默认模型配置
+MODEL_CONFIG_NAME ?= Doubao
 MODEL_CONFIG_ARGS = -workspace-name "$(MODEL_CONFIG_WORKSPACE)" -name "$(MODEL_CONFIG_NAME)"
 
 bootstrap-model-config: ## 在 make up 的完整环境初始化/更新模型配置版本
@@ -128,6 +128,11 @@ bootstrap-model-config: ## 在 make up 的完整环境初始化/更新模型配�
 bootstrap-model-config-lite: ## 在 make up-lite 的轻量环境初始化/更新模型配置版本
 	$(LITE_COMPOSE) run --rm --build --entrypoint /ecommerce-ops-bootstrap-model-config migrate \
 		$(MODEL_CONFIG_ARGS)
+
+bootstrap-deepseek-model-config: ## 为完整环境新增/复用 DeepSeek Chat 模型配置
+	$(LANGFUSE_COMPOSE) run --rm --build --entrypoint /ecommerce-ops-bootstrap-model-config migrate \
+		-workspace-name "$(MODEL_CONFIG_WORKSPACE)" -name "DeepSeek" \
+		-base-url "https://api.deepseek.com/v1" -model "deepseek-chat" -credential-ref "DEEPSEEK_API_KEY"
 
 crossborder-bootstrap-model-config: ## 在 make crossborder-up 的独立环境初始化/更新模型配置版本
 	$(CROSSBORDER_COMPOSE) run --rm --build --entrypoint /ecommerce-ops-bootstrap-model-config migrate \

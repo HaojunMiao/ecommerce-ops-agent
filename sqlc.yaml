@@ -18,10 +18,6 @@ sql:
             go_type:
               import: "github.com/google/uuid"
               type: "UUID"
-          - db_type: "vector"
-            go_type:
-              import: "github.com/pgvector/pgvector-go"
-              type: "Vector"
           - db_type: "timestamptz"
             go_type:
               import: "time"

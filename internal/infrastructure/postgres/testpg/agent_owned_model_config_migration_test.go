@@ -30,7 +30,7 @@ func TestAgentOwnedModelConfigMigration_BackfillsLegacySnapshot(t *testing.T) {
 		t.Fatalf("open migrator: %v", err)
 	}
 	defer m.Close()
-	if err := m.Steps(-2); err != nil {
+	if err := m.Migrate(36); err != nil {
 		t.Fatalf("migrate to legacy schema: %v", err)
 	}
 

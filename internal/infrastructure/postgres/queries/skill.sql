@@ -1,4 +1,4 @@
--- Skill:skills / skill_versions / skill_subscriptions
+-- Skill:skills / skill_versions
 
 -- name: GetSkill :one
 SELECT * FROM skills WHERE id = $1 LIMIT 1;
@@ -35,10 +35,3 @@ RETURNING *;
 
 -- name: UpdateSkillVersionStatus :exec
 UPDATE skill_versions SET status = $2 WHERE id = $1;
-
--- name: CreateSkillSubscription :exec
-INSERT INTO skill_subscriptions (skill_id, version_id, agent_id, workspace_id)
-VALUES ($1, $2, $3, $4);
-
--- name: ListSubscriptionsForAgent :many
-SELECT * FROM skill_subscriptions WHERE agent_id = $1 ORDER BY id;

@@ -47,7 +47,6 @@ type Store interface {
 
 	// ToolTestRun相关
 	CreateTestRun(ctx context.Context, testRun *domain.ToolTestRun) error
-	GetToolLastSuccessfulTestRun(ctx context.Context, toolID string) (*domain.ToolTestRun, error)
 	GetToolLastSuccessfulTestRunForVersion(ctx context.Context, versionID string) (*domain.ToolTestRun, error)
 }
 

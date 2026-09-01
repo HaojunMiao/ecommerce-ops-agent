@@ -26,7 +26,7 @@ func TestAgentSingleRuntimeSnapshotMigration_RemovesConversationOverrides(t *tes
 		t.Fatalf("open migrator: %v", err)
 	}
 	defer m.Close()
-	if err := m.Steps(-1); err != nil {
+	if err := m.Migrate(37); err != nil {
 		t.Fatalf("migrate to version 37: %v", err)
 	}
 

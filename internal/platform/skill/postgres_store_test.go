@@ -17,7 +17,7 @@ func TestPostgresSkillStore_Contract(t *testing.T) {
 	pool := testpg.Start(t)
 	runSkillStoreContract(t, func(t *testing.T) skill.Store {
 		if _, err := pool.Exec(context.Background(),
-			`TRUNCATE skills, skill_versions, skill_subscriptions CASCADE`); err != nil {
+			`TRUNCATE skills, skill_versions CASCADE`); err != nil {
 			t.Fatalf("truncate: %v", err)
 		}
 		return skill.NewPostgresStore(pgstore.New(pool))

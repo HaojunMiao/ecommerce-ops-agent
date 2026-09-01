@@ -306,29 +306,6 @@ func (s *Service) PromoteAgentVersion(ctx context.Context, agentID, workspaceID,
 	return s.store.SetAgentEnvBinding(ctx, agentID, env, versionID)
 }
 
-// AttachSkillVersion 基于 dev 当前快照创建一个包含指定 Skill 的新版本。
-// 该方法让旧 subscribe API 也遵守不可变版本语义，并立即影响后续新会话。
-func (s *Service) AttachSkillVersion(
-	ctx context.Context,
-	agentID, workspaceID, skillVersionID, actor string,
-) (*AgentVersionView, error) {
-	current, err := s.store.GetAgentCurrentVersion(ctx, agentID, "dev")
-	if err != nil {
-		return nil, fmt.Errorf("get current agent version: %w", err)
-	}
-	view, err := s.versionView(ctx, current)
-	if err != nil {
-		return nil, err
-	}
-	for _, existing := range view.Config.SkillVersionIDs {
-		if existing == skillVersionID {
-			return view, nil
-		}
-	}
-	view.Config.SkillVersionIDs = append(view.Config.SkillVersionIDs, skillVersionID)
-	return s.CreateAgentVersion(ctx, agentID, workspaceID, view.Config, actor)
-}
-
 func (s *Service) buildSnapshotJSON(ctx context.Context, agentID, workspaceID string, cfg AgentVersionConfig) ([]byte, error) {
 	cfg.ToolVersionIDs = uniqueStrings(cfg.ToolVersionIDs)
 	cfg.SkillVersionIDs = uniqueStrings(cfg.SkillVersionIDs)

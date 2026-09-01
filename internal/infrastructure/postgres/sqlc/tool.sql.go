@@ -326,27 +326,6 @@ func (q *Queries) GetToolCurrentVersion(ctx context.Context, toolID uuid.UUID) (
 	return i, err
 }
 
-const getToolLastSuccessfulTestRun = `-- name: GetToolLastSuccessfulTestRun :one
-SELECT id, tool_id, input, output, status, latency_ms, error, created_at, tool_version_id FROM tool_test_runs WHERE tool_id = $1 AND status = 'success' ORDER BY created_at DESC LIMIT 1
-`
-
-func (q *Queries) GetToolLastSuccessfulTestRun(ctx context.Context, toolID uuid.UUID) (ToolTestRun, error) {
-	row := q.db.QueryRow(ctx, getToolLastSuccessfulTestRun, toolID)
-	var i ToolTestRun
-	err := row.Scan(
-		&i.ID,
-		&i.ToolID,
-		&i.Input,
-		&i.Output,
-		&i.Status,
-		&i.LatencyMs,
-		&i.Error,
-		&i.CreatedAt,
-		&i.ToolVersionID,
-	)
-	return i, err
-}
-
 const getToolLastSuccessfulTestRunForVersion = `-- name: GetToolLastSuccessfulTestRunForVersion :one
 SELECT id, tool_id, input, output, status, latency_ms, error, created_at, tool_version_id FROM tool_test_runs WHERE tool_version_id = $1 AND status = 'success' ORDER BY created_at DESC LIMIT 1
 `

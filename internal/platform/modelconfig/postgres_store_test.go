@@ -15,7 +15,7 @@ func TestPostgresModelConfigRoundTrip(t *testing.T) {
 	ctx := context.Background()
 	_, _ = db.Exec(ctx, `TRUNCATE model_config_versions CASCADE`)
 	svc := modelconfig.NewService(modelconfig.NewPostgresStore(db))
-	svc.SetCredential(modelconfig.DefaultCredentialRef, "sk-integration")
+	svc.SetCredential(modelconfig.DoubaoCredentialRef, "sk-integration")
 	v, err := svc.EnsureConfigVersion(ctx, modelconfig.EnsureConfigRequest{
 		WorkspaceID: "w-model", Name: "main", BaseURL: "https://example.com/v1", ModelName: "test-model",
 		InputPricePerMillion: 1, CachedInputPricePerMillion: .2, OutputPricePerMillion: 3,

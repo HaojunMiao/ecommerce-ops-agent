@@ -46,28 +46,6 @@ func (q *Queries) CreateSkill(ctx context.Context, arg CreateSkillParams) (Skill
 	return i, err
 }
 
-const createSkillSubscription = `-- name: CreateSkillSubscription :exec
-INSERT INTO skill_subscriptions (skill_id, version_id, agent_id, workspace_id)
-VALUES ($1, $2, $3, $4)
-`
-
-type CreateSkillSubscriptionParams struct {
-	SkillID     uuid.UUID
-	VersionID   uuid.UUID
-	AgentID     string
-	WorkspaceID string
-}
-
-func (q *Queries) CreateSkillSubscription(ctx context.Context, arg CreateSkillSubscriptionParams) error {
-	_, err := q.db.Exec(ctx, createSkillSubscription,
-		arg.SkillID,
-		arg.VersionID,
-		arg.AgentID,
-		arg.WorkspaceID,
-	)
-	return err
-}
-
 const createSkillVersion = `-- name: CreateSkillVersion :one
 INSERT INTO skill_versions (id, skill_id, version, frontmatter_json, body_md, status, created_by, created_at)
 VALUES ($1, $2, $3, $4, $5, $6, $7, now())
@@ -154,7 +132,7 @@ const getSkill = `-- name: GetSkill :one
 SELECT id, workspace_id, name, category, created_by, created_at, updated_at FROM skills WHERE id = $1 LIMIT 1
 `
 
-// Skill:skills / skill_versions / skill_subscriptions
+// Skill:skills / skill_versions
 func (q *Queries) GetSkill(ctx context.Context, id uuid.UUID) (Skill, error) {
 	row := q.db.QueryRow(ctx, getSkill, id)
 	var i Skill
@@ -244,37 +222,6 @@ func (q *Queries) ListSkills(ctx context.Context, workspaceID string) ([]Skill, 
 			&i.CreatedBy,
 			&i.CreatedAt,
 			&i.UpdatedAt,
-		); err != nil {
-			return nil, err
-		}
-		items = append(items, i)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
-}
-
-const listSubscriptionsForAgent = `-- name: ListSubscriptionsForAgent :many
-SELECT id, skill_id, version_id, agent_id, workspace_id, created_at FROM skill_subscriptions WHERE agent_id = $1 ORDER BY id
-`
-
-func (q *Queries) ListSubscriptionsForAgent(ctx context.Context, agentID string) ([]SkillSubscription, error) {
-	rows, err := q.db.Query(ctx, listSubscriptionsForAgent, agentID)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	items := []SkillSubscription{}
-	for rows.Next() {
-		var i SkillSubscription
-		if err := rows.Scan(
-			&i.ID,
-			&i.SkillID,
-			&i.VersionID,
-			&i.AgentID,
-			&i.WorkspaceID,
-			&i.CreatedAt,
 		); err != nil {
 			return nil, err
 		}
