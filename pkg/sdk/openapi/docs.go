@@ -735,39 +735,6 @@ const docTemplate = `{
                 }
             }
         },
-        "/prompts/{prompt_id}/promote": {
-            "post": {
-                "security": [
-                    {
-                        "BearerAuth": []
-                    }
-                ],
-                "tags": [
-                    "prompts"
-                ],
-                "summary": "晋升 Prompt 版本到某环境",
-                "parameters": [
-                    {
-                        "type": "string",
-                        "description": "Prompt ID",
-                        "name": "prompt_id",
-                        "in": "path",
-                        "required": true
-                    }
-                ],
-                "responses": {
-                    "200": {
-                        "description": "OK",
-                        "schema": {
-                            "type": "object",
-                            "additionalProperties": {
-                                "type": "string"
-                            }
-                        }
-                    }
-                }
-            }
-        },
         "/skills": {
             "get": {
                 "security": [
@@ -1135,6 +1102,9 @@ const docTemplate = `{
                 "allow_network": {
                     "type": "boolean"
                 },
+                "generation_config": {
+                    "$ref": "#/definitions/domain.GenerationConfig"
+                },
                 "kb_ids": {
                     "type": "array",
                     "items": {
@@ -1145,10 +1115,6 @@ const docTemplate = `{
                     "type": "integer"
                 },
                 "model_config_version_id": {
-                    "description": "只读：由 system prompt 版本派生",
-                    "type": "string"
-                },
-                "prompt_env": {
                     "type": "string"
                 },
                 "skill_version_ids": {
@@ -1157,22 +1123,16 @@ const docTemplate = `{
                         "type": "string"
                     }
                 },
-                "system_prompt": {
-                    "type": "string"
-                },
-                "system_prompt_id": {
-                    "type": "string"
-                },
                 "system_prompt_version_id": {
                     "type": "string"
                 },
-                "tool_ids": {
+                "tool_version_ids": {
                     "type": "array",
                     "items": {
                         "type": "string"
                     }
                 },
-                "user_prompt_id": {
+                "user_prompt_version_id": {
                     "type": "string"
                 }
             }
@@ -1215,6 +1175,9 @@ const docTemplate = `{
                 "created_by": {
                     "type": "string"
                 },
+                "generation_config": {
+                    "$ref": "#/definitions/domain.GenerationConfig"
+                },
                 "kb_ids": {
                     "type": "array",
                     "items": {
@@ -1224,10 +1187,10 @@ const docTemplate = `{
                 "max_steps": {
                     "type": "integer"
                 },
-                "name": {
+                "model_config_version_id": {
                     "type": "string"
                 },
-                "prompt_env": {
+                "name": {
                     "type": "string"
                 },
                 "skill_version_ids": {
@@ -1236,29 +1199,19 @@ const docTemplate = `{
                         "type": "string"
                     }
                 },
-                "system_prompt": {
-                    "description": "字面量",
-                    "type": "string"
-                },
-                "system_prompt_id": {
-                    "description": "推荐：绑定 Prompt，创建会话时按环境解析版本",
-                    "type": "string"
-                },
                 "system_prompt_version_id": {
-                    "description": "或绑定 Prompt 中心版本",
                     "type": "string"
                 },
                 "template": {
                     "type": "string"
                 },
-                "tool_ids": {
+                "tool_version_ids": {
                     "type": "array",
                     "items": {
                         "type": "string"
                     }
                 },
-                "user_prompt_id": {
-                    "description": "可选：首轮任务输入模板",
+                "user_prompt_version_id": {
                     "type": "string"
                 },
                 "workspace_id": {
@@ -1271,9 +1224,6 @@ const docTemplate = `{
             "properties": {
                 "enabled": {
                     "type": "boolean"
-                },
-                "prompt_env": {
-                    "type": "string"
                 },
                 "prompt_id": {
                     "type": "string"
@@ -1374,9 +1324,6 @@ const docTemplate = `{
                 "created_by": {
                     "type": "string"
                 },
-                "embedding_model": {
-                    "type": "string"
-                },
                 "name": {
                     "type": "string"
                 },
@@ -1442,12 +1389,6 @@ const docTemplate = `{
                     "type": "string"
                 },
                 "created_by": {
-                    "type": "string"
-                },
-                "generation_config": {
-                    "$ref": "#/definitions/domain.GenerationConfig"
-                },
-                "model_config_version_id": {
                     "type": "string"
                 },
                 "name": {

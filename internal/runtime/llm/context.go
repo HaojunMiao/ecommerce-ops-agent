@@ -25,7 +25,7 @@ func classificationFromContext(ctx context.Context) string {
 	return ""
 }
 
-// InvocationConfig 是一次会话已经固化的模型调用配置。
+// InvocationConfig 是从会话固定的 AgentVersion 解析出的一次模型调用配置。
 type InvocationConfig struct {
 	WorkspaceID          string
 	Environment          string

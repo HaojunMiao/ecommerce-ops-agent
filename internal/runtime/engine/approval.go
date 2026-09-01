@@ -125,9 +125,6 @@ func (e *Engine) Resume(ctx context.Context, conversationID, approvalID string) 
 	if err != nil {
 		return "", fmt.Errorf("get agent snapshot: %w", err)
 	}
-	if err := applyConversationRuntimeConfig(snapshot, conv.RuntimeConfigJSON); err != nil {
-		return "", err
-	}
 	ctx = llm.WithInvocationConfig(ctx, llm.InvocationConfig{
 		WorkspaceID: conv.WorkspaceID, AgentID: conv.AgentID, UserID: conv.UserID,
 		Environment:          conversationEnvironment(conv),

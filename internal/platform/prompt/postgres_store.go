@@ -2,12 +2,10 @@ package prompt
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/HaojunMiao/ecommerce-ops-agent/internal/domain"
@@ -87,10 +85,6 @@ func (s *PostgresStore) ListPrompts(ctx context.Context, workspaceID string) ([]
 // ---- PromptVersion(immutable) ----
 
 func (s *PostgresStore) CreatePromptVersion(ctx context.Context, v *domain.PromptVersion) error {
-	// CreatePromptVersion 返回的基础表行不包含版本化模型配置。先保存调用方
-	// 传入的配置，避免用数据库 canonical row 回填实体时把它们清空。
-	modelConfigVersionID := v.ModelConfigVersionID
-	generationConfig := v.GenerationConfig
 	id, err := uuid.Parse(v.ID)
 	if err != nil {
 		return fmt.Errorf("parse version id: %w", err)
@@ -99,13 +93,7 @@ func (s *PostgresStore) CreatePromptVersion(ctx context.Context, v *domain.Promp
 	if err != nil {
 		return fmt.Errorf("parse prompt id: %w", err)
 	}
-	tx, err := s.db.Begin(ctx)
-	if err != nil {
-		return fmt.Errorf("begin prompt version: %w", err)
-	}
-	defer tx.Rollback(ctx) //nolint:errcheck
-	q := s.q.WithTx(tx)
-	row, err := q.CreatePromptVersion(ctx, pgstore.CreatePromptVersionParams{
+	row, err := s.q.CreatePromptVersion(ctx, pgstore.CreatePromptVersionParams{
 		ID:              id,
 		PromptID:        promptID,
 		Version:         int32(v.Version),
@@ -118,32 +106,7 @@ func (s *PostgresStore) CreatePromptVersion(ctx context.Context, v *domain.Promp
 	if err != nil {
 		return fmt.Errorf("create prompt version: %w", err)
 	}
-	*v = *versionFromRow(row) // 写回 canonical ID/PromptID,与 p.ID 同形
-	v.ModelConfigVersionID = modelConfigVersionID
-	v.GenerationConfig = generationConfig
-	if modelConfigVersionID != "" || !emptyGenerationConfig(generationConfig) {
-		var configID any
-		if modelConfigVersionID != "" {
-			parsed, err := uuid.Parse(modelConfigVersionID)
-			if err != nil {
-				return fmt.Errorf("parse model config version id: %w", err)
-			}
-			configID = parsed
-		}
-		configJSON, err := json.Marshal(generationConfig)
-		if err != nil {
-			return err
-		}
-		if _, err := tx.Exec(ctx, `
-			INSERT INTO prompt_version_configs
-			  (prompt_version_id,model_config_version_id,generation_config)
-			VALUES ($1,$2,$3)`, row.ID, configID, configJSON); err != nil {
-			return fmt.Errorf("create prompt version config: %w", err)
-		}
-	}
-	if err := tx.Commit(ctx); err != nil {
-		return fmt.Errorf("commit prompt version: %w", err)
-	}
+	*v = *versionFromRow(row)
 	return nil
 }
 
@@ -157,9 +120,6 @@ func (s *PostgresStore) GetPromptVersion(ctx context.Context, versionID string) 
 		return nil, notFound("prompt version", err)
 	}
 	v := versionFromRow(row)
-	if err := s.loadVersionConfig(ctx, v); err != nil {
-		return nil, err
-	}
 	return v, nil
 }
 
@@ -176,9 +136,6 @@ func (s *PostgresStore) GetPromptVersionByNumber(ctx context.Context, promptID s
 		return nil, notFound("prompt version", err)
 	}
 	v := versionFromRow(row)
-	if err := s.loadVersionConfig(ctx, v); err != nil {
-		return nil, err
-	}
 	return v, nil
 }
 
@@ -193,78 +150,9 @@ func (s *PostgresStore) ListPromptVersions(ctx context.Context, promptID string)
 	}
 	out := make([]*domain.PromptVersion, 0, len(rows))
 	for _, r := range rows {
-		v := versionFromRow(r)
-		if err := s.loadVersionConfig(ctx, v); err != nil {
-			return nil, err
-		}
-		out = append(out, v)
+		out = append(out, versionFromRow(r))
 	}
 	return out, nil
-}
-
-// ---- Env 指针 ----
-
-func (s *PostgresStore) SetEnvBinding(ctx context.Context, promptID, env, versionID string) error {
-	pid, err := uuid.Parse(promptID)
-	if err != nil {
-		return fmt.Errorf("parse prompt id: %w", err)
-	}
-	vid, err := uuid.Parse(versionID)
-	if err != nil {
-		return fmt.Errorf("parse version id: %w", err)
-	}
-	if err := s.q.UpsertPromptEnv(ctx, pgstore.UpsertPromptEnvParams{
-		PromptID:  pid,
-		Env:       env,
-		VersionID: vid,
-	}); err != nil {
-		return fmt.Errorf("upsert prompt env: %w", err)
-	}
-	return nil
-}
-
-func (s *PostgresStore) GetEnvBinding(ctx context.Context, promptID, env string) (string, error) {
-	pid, err := uuid.Parse(promptID)
-	if err != nil {
-		return "", fmt.Errorf("parse prompt id: %w", err)
-	}
-	vid, err := s.q.GetPromptEnv(ctx, pgstore.GetPromptEnvParams{PromptID: pid, Env: env})
-	if err != nil {
-		if err == pgx.ErrNoRows {
-			return "", fmt.Errorf("no version bound for env %s", env)
-		}
-		return "", fmt.Errorf("get prompt env: %w", err)
-	}
-	return vid.String(), nil
-}
-
-func (s *PostgresStore) loadVersionConfig(ctx context.Context, v *domain.PromptVersion) error {
-	var configID pgtype.UUID
-	var configJSON []byte
-	err := s.db.QueryRow(ctx, `
-		SELECT model_config_version_id,generation_config
-		FROM prompt_version_configs WHERE prompt_version_id=$1`, uuid.MustParse(v.ID)).
-		Scan(&configID, &configJSON)
-	if err == pgx.ErrNoRows {
-		return nil
-	}
-	if err != nil {
-		return fmt.Errorf("get prompt version config: %w", err)
-	}
-	if configID.Valid {
-		v.ModelConfigVersionID = uuid.UUID(configID.Bytes).String()
-	}
-	if len(configJSON) > 0 {
-		if err := json.Unmarshal(configJSON, &v.GenerationConfig); err != nil {
-			return fmt.Errorf("decode generation config: %w", err)
-		}
-	}
-	return nil
-}
-
-func emptyGenerationConfig(v domain.GenerationConfig) bool {
-	return v.Temperature == nil && v.TopP == nil && v.MaxOutputTokens == nil &&
-		len(v.Stop) == 0 && v.Seed == nil
 }
 
 // ---- 行 → domain ----

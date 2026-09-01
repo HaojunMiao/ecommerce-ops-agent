@@ -63,9 +63,8 @@ type Querier interface {
 	// KB:kbs / kb_documents / kb_ingest_jobs / connector_instances
 	// kb_chunks 的写入与向量/全文检索由 runtime/retriever 的 PostgreSQL 实现负责。
 	GetKB(ctx context.Context, id uuid.UUID) (Kb, error)
-	// Prompt:不可变版本与环境绑定。
+	// Prompt:不可变模板版本。
 	GetPrompt(ctx context.Context, id uuid.UUID) (Prompt, error)
-	GetPromptEnv(ctx context.Context, arg GetPromptEnvParams) (uuid.UUID, error)
 	GetPromptVersion(ctx context.Context, id uuid.UUID) (PromptVersion, error)
 	GetPromptVersionByNumber(ctx context.Context, arg GetPromptVersionByNumberParams) (PromptVersion, error)
 	// Skill:skills / skill_versions / skill_subscriptions
@@ -131,7 +130,6 @@ type Querier interface {
 	UpsertAgentEnv(ctx context.Context, arg UpsertAgentEnvParams) error
 	UpsertConnector(ctx context.Context, arg UpsertConnectorParams) error
 	UpsertDocument(ctx context.Context, arg UpsertDocumentParams) error
-	UpsertPromptEnv(ctx context.Context, arg UpsertPromptEnvParams) error
 	UpsertWorkspaceMember(ctx context.Context, arg UpsertWorkspaceMemberParams) (WorkspaceMember, error)
 }
 

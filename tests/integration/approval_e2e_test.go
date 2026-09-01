@@ -16,14 +16,13 @@ import (
 	"github.com/HaojunMiao/ecommerce-ops-agent/internal/platform"
 	"github.com/HaojunMiao/ecommerce-ops-agent/internal/platform/agent"
 	"github.com/HaojunMiao/ecommerce-ops-agent/internal/platform/approval"
-	"github.com/HaojunMiao/ecommerce-ops-agent/internal/platform/prompt"
 	"github.com/HaojunMiao/ecommerce-ops-agent/internal/platform/tool"
 	"github.com/HaojunMiao/ecommerce-ops-agent/internal/runtime/engine"
 )
 
 func TestSensitiveToolApprovalE2E(t *testing.T) {
 	ctx := context.Background()
-	plat := platform.NewService(nil, nil, make([]byte, 32), prompt.NoopPublisher{}, nil, nil)
+	plat := platform.NewService(nil, nil, make([]byte, 32), nil, nil)
 
 	// 一个被工具命中的 REST 端点(用 hits 验证"批准后才执行")。
 	var hits int
@@ -49,9 +48,14 @@ func TestSensitiveToolApprovalE2E(t *testing.T) {
 	if err := plat.Tool.PublishTool(ctx, tl.ID); err != nil {
 		t.Fatalf("publish tool: %v", err)
 	}
+	toolVersion, err := plat.Tool.GetToolCurrentVersion(ctx, tl.ID)
+	if err != nil {
+		t.Fatalf("get published tool version: %v", err)
+	}
 
 	ag, err := plat.Agent.CreateAgent(ctx, agent.CreateAgentRequest{
-		WorkspaceID: "w1", Name: "bot", SystemPromptID: createTestSystemPrompt(t, ctx, plat, "w1"), ToolIDs: []string{tl.ID}, CreatedBy: "u1",
+		WorkspaceID: "w1", Name: "bot", SystemPromptVersionID: createTestSystemPrompt(t, ctx, plat, "w1"),
+		ModelConfigVersionID: ensureTestModelConfig(t, ctx, plat, "w1"), ToolVersionIDs: []string{toolVersion.ID}, CreatedBy: "u1",
 	})
 	if err != nil {
 		t.Fatalf("create agent: %v", err)

@@ -11,7 +11,8 @@ import { AgentConfigFields } from '@/components/AgentConfigFields'
 import { useState } from 'react'
 
 const EMPTY_CONFIG: AgentVersionConfig = {
-  prompt_env: 'dev', tool_ids: [], skill_version_ids: [], kb_ids: [], allow_network: false, max_steps: 8,
+  system_prompt_version_id: '', model_config_version_id: '', generation_config: {},
+  tool_version_ids: [], skill_version_ids: [], kb_ids: [], allow_network: false, max_steps: 8,
 }
 
 export function AgentDetailPage() {
@@ -43,7 +44,6 @@ export function AgentDetailPage() {
   const openNewVersion = () => {
     const latest = versionsQ.data?.[0]
     const editable = { ...(latest?.config ?? {}) }
-    delete editable.system_prompt_version_id
     form.setFieldsValue({ ...EMPTY_CONFIG, ...editable })
     setOpen(true)
   }
@@ -105,10 +105,10 @@ export function AgentDetailPage() {
                   <Tag color={row.config.model_config_version_id ? 'cyan' : 'red'}>
                     Model v{row.config.model_config_version_id?.slice(0, 8) ?? '无效'}
                   </Tag>
-                  <Tag color={row.config.user_prompt_id ? 'purple' : 'default'}>
-                    {row.config.user_prompt_id ? 'User Template' : '自由输入'}
+                  <Tag color={row.config.user_prompt_version_id ? 'purple' : 'default'}>
+                    {row.config.user_prompt_version_id ? 'User Template' : '自由输入'}
                   </Tag>
-                  <Tag>{row.config.tool_ids?.length ?? 0} Tools</Tag>
+                  <Tag>{row.config.tool_version_ids?.length ?? 0} Tools</Tag>
                   <Tag>{row.config.skill_version_ids?.length ?? 0} Skills</Tag>
                   <Tag>{row.config.kb_ids?.length ?? 0} KBs</Tag>
                   <Tag color={row.config.allow_network ? 'orange' : 'default'}>网络 {row.config.allow_network ? '开' : '关'}</Tag>

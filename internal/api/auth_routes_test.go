@@ -10,7 +10,7 @@ import (
 )
 
 func TestRegisterRequiresAuthentication(t *testing.T) {
-	services := platform.NewService(nil, nil, []byte("test-jwt-key-at-least-32-characters"), nil, nil, nil)
+	services := platform.NewService(nil, nil, []byte("test-jwt-key-at-least-32-characters"), nil, nil)
 	t.Cleanup(services.Audit.Close)
 	routes := NewHandler(services, nil, nil).Routes()
 

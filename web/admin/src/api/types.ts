@@ -22,11 +22,11 @@ export interface Agent {
 export interface CreateAgentRequest {
   name: string
   template: string
-  system_prompt_version_id?: string
-  system_prompt_id?: string
-  user_prompt_id?: string
-  prompt_env?: string
-  tool_ids?: string[]
+  system_prompt_version_id: string
+  user_prompt_version_id?: string
+  model_config_version_id: string
+  generation_config?: GenerationConfig
+  tool_version_ids?: string[]
   skill_version_ids?: string[]
   kb_ids?: string[]
   allow_network?: boolean
@@ -34,12 +34,11 @@ export interface CreateAgentRequest {
 }
 
 export interface AgentVersionConfig {
-  system_prompt_version_id?: string
-  system_prompt_id?: string
-  model_config_version_id?: string
-  user_prompt_id?: string
-  prompt_env?: string
-  tool_ids?: string[]
+  system_prompt_version_id: string
+  user_prompt_version_id?: string
+  model_config_version_id: string
+  generation_config?: GenerationConfig
+  tool_version_ids?: string[]
   skill_version_ids?: string[]
   kb_ids?: string[]
   allow_network?: boolean
@@ -93,18 +92,18 @@ export interface PromptVersion {
   version: number
   template: string
   variables_schema: string
-  model_config_version_id?: string
-  generation_config?: {
-    temperature?: number
-    top_p?: number
-    max_output_tokens?: number
-    stop?: string[]
-    seed?: number
-  }
   hash: string
   token_estimate: number
   created_by: string
   created_at: string
+}
+
+export interface GenerationConfig {
+  temperature?: number
+  top_p?: number
+  max_output_tokens?: number
+  stop?: string[]
+  seed?: number
 }
 
 // ---- Skills ----

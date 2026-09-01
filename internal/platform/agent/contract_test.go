@@ -27,8 +27,8 @@ func runAgentStoreContract(t *testing.T, newStore func(t *testing.T) agent.Store
 		if err != nil || got.Name != "助手" || got.Template != "general" {
 			t.Fatalf("GetAgent mismatch: %+v err=%v", got, err)
 		}
-		v1Snapshot := `{"prompt_version_id":"p1","model_config_version_id":"m1"}`
-		v2Snapshot := `{"prompt_version_id":"p2","model_config_version_id":"m2"}`
+		v1Snapshot := `{"system_prompt_version_id":"p1","model_config_version_id":"m1","generation_config":{}}`
+		v2Snapshot := `{"system_prompt_version_id":"p2","model_config_version_id":"m2","generation_config":{"temperature":0.2}}`
 		v1 := &domain.AgentVersion{ID: util.GenerateID(), AgentID: a.ID, Version: 1, SnapshotJSON: v1Snapshot, CreatedBy: "u1"}
 		v2 := &domain.AgentVersion{ID: util.GenerateID(), AgentID: a.ID, Version: 2, SnapshotJSON: v2Snapshot, CreatedBy: "u1"}
 		if err := s.CreateAgentVersion(ctx, v1); err != nil {

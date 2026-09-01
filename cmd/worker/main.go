@@ -20,7 +20,6 @@ import (
 	"github.com/HaojunMiao/ecommerce-ops-agent/internal/platform/approval"
 	"github.com/HaojunMiao/ecommerce-ops-agent/internal/platform/kb"
 	"github.com/HaojunMiao/ecommerce-ops-agent/internal/platform/modelconfig"
-	"github.com/HaojunMiao/ecommerce-ops-agent/internal/platform/prompt"
 	"github.com/HaojunMiao/ecommerce-ops-agent/internal/platform/tool"
 	"github.com/HaojunMiao/ecommerce-ops-agent/internal/runtime/engine"
 	"github.com/HaojunMiao/ecommerce-ops-agent/internal/runtime/llm"
@@ -47,7 +46,7 @@ func main() {
 	if err != nil {
 		log.Fatalf("build embedder: %v", err)
 	}
-	plat := platform.NewService(db, rds, cfg.JWTKeyBytes(), prompt.NoopPublisher{}, embedder, nil,
+	plat := platform.NewService(db, rds, cfg.JWTKeyBytes(), embedder, nil,
 		[]byte(cfg.CredentialEncryptionKey))
 	endpointPolicy := tool.NewEndpointPolicy(cfg.ToolAllowedHosts, cfg.ToolAllowPrivateNetwork)
 	plat.Tool.ConfigureEndpointPolicy(endpointPolicy)

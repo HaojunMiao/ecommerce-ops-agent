@@ -50,24 +50,24 @@ if [ -z "$model_config_version_id" ]; then
   exit 1
 fi
 
-echo "==> 获取或创建绑定模型版本的 System Prompt"
+echo "==> 获取或创建 System PromptVersion"
 system_prompt='你是跨境电商运营与供应链协同 Agent。所有订单、库存、物流与结算事实必须来自工具。敏感写操作必须等待人工审批。'
 prompts=$(curl -fsS "$base_url/api/v1/prompts" "${auth[@]}")
 prompt_id=$(printf '%s' "$prompts" | jq -r --arg name "$prompt_name" '.[] | select(.name==$name) | .id' | head -1)
 if [ -z "$prompt_id" ]; then
   created_prompt=$(curl -fsS -X POST "$base_url/api/v1/prompts" "${auth[@]}" \
-    -d "$(jq -n --arg name "$prompt_name" --arg template "$system_prompt" --arg model "$model_config_version_id" \
-      '{name:$name,category:"crossborder-system",template:$template,variables_schema:"{}",model_config_version_id:$model,generation_config:{temperature:0.2,max_output_tokens:2048}}')")
+    -d "$(jq -n --arg name "$prompt_name" --arg template "$system_prompt" \
+      '{name:$name,category:"crossborder-system",template:$template,variables_schema:"{}"}')")
   prompt_id=$(printf '%s' "$created_prompt" | jq -r '.prompt.id')
   prompt_version_id=$(printf '%s' "$created_prompt" | jq -r '.version.id')
 else
   prompt_versions=$(curl -fsS "$base_url/api/v1/prompts/$prompt_id/versions" "${auth[@]}")
-  prompt_version_id=$(printf '%s' "$prompt_versions" | jq -r --arg template "$system_prompt" --arg model "$model_config_version_id" \
-    '[.[] | select(.template==$template and .model_config_version_id==$model)] | sort_by(.version) | last | .id // empty')
+  prompt_version_id=$(printf '%s' "$prompt_versions" | jq -r --arg template "$system_prompt" \
+    '[.[] | select(.template==$template)] | sort_by(.version) | last | .id // empty')
   if [ -z "$prompt_version_id" ]; then
     prompt_version_id=$(curl -fsS -X POST "$base_url/api/v1/prompts/$prompt_id/versions" "${auth[@]}" \
-      -d "$(jq -n --arg template "$system_prompt" --arg model "$model_config_version_id" \
-        '{template:$template,variables_schema:"{}",model_config_version_id:$model,generation_config:{temperature:0.2,max_output_tokens:2048}}')" | jq -r '.id')
+      -d "$(jq -n --arg template "$system_prompt" \
+        '{template:$template,variables_schema:"{}"}')" | jq -r '.id')
   fi
 fi
 
@@ -98,7 +98,7 @@ test_input() {
 
 echo "==> 注册、试调并发布 Tool"
 existing_tools=$(curl -fsS "$base_url/api/v1/tools" "${auth[@]}")
-tool_ids=()
+tool_version_ids=()
 while IFS= read -r definition; do
   name=$(printf '%s' "$definition" | jq -r '.name')
   tool_id=$(printf '%s' "$existing_tools" | jq -r --arg name "$name" '.[] | select(.name==$name) | .id' | head -1)
@@ -115,9 +115,15 @@ while IFS= read -r definition; do
     fi
     curl -fsS -X POST "$base_url/api/v1/tools/$tool_id/publish" "${auth[@]}" -d '{}' >/dev/null
   fi
-  tool_ids+=("$tool_id")
+  tool_version_id=$(curl -fsS "$base_url/api/v1/tools/$tool_id/versions" "${auth[@]}" |
+    jq -r '[.[] | select(.status=="published")] | sort_by(.version) | last | .id // empty')
+  if [ -z "$tool_version_id" ]; then
+    printf 'tool %s has no published version\n' "$name" >&2
+    exit 1
+  fi
+  tool_version_ids+=("$tool_version_id")
 done < <(jq -c '.[]' "$project_dir/config/tools.json")
-tool_ids_json=$(printf '%s\n' "${tool_ids[@]}" | jq -R . | jq -s .)
+tool_version_ids_json=$(printf '%s\n' "${tool_version_ids[@]}" | jq -R . | jq -s .)
 
 echo "==> 创建并发布 Skill"
 existing_skills=$(curl -fsS "$base_url/api/v1/skills" "${auth[@]}")
@@ -183,10 +189,11 @@ agents=$(curl -fsS "$base_url/api/v1/agents" "${auth[@]}")
 agent_id=$(printf '%s' "$agents" | jq -r --arg name "$agent_name" '.[] | select(.name==$name) | .id' | head -1)
 agent_config=$(jq -n \
   --arg system_prompt_version_id "$prompt_version_id" \
+  --arg model_config_version_id "$model_config_version_id" \
   --arg kb "$kb_id" \
-  --argjson tools "$tool_ids_json" \
+  --argjson tools "$tool_version_ids_json" \
   --argjson skills "$skill_ids_json" \
-  '{system_prompt_version_id:$system_prompt_version_id,prompt_env:"dev",tool_ids:$tools,skill_version_ids:$skills,kb_ids:[$kb],allow_network:true,max_steps:10}')
+  '{system_prompt_version_id:$system_prompt_version_id,model_config_version_id:$model_config_version_id,generation_config:{temperature:0.2,max_output_tokens:2048},tool_version_ids:$tools,skill_version_ids:$skills,kb_ids:[$kb],allow_network:true,max_steps:10}')
 if [ -z "$agent_id" ]; then
   agent_payload=$(printf '%s' "$agent_config" | jq --arg name "$agent_name" '. + {name:$name,template:"crossborder_commerce"}')
   agent_id=$(curl -fsS -X POST "$base_url/api/v1/agents" "${auth[@]}" -d "$agent_payload" | jq -r '.id')
@@ -194,13 +201,16 @@ else
   agent_versions=$(curl -fsS "$base_url/api/v1/agents/$agent_id/versions" "${auth[@]}")
   config_matches=$(printf '%s' "$agent_versions" | jq -r \
     --arg system_prompt_version_id "$prompt_version_id" \
+    --arg model_config_version_id "$model_config_version_id" \
     --arg kb "$kb_id" \
-    --argjson tools "$tool_ids_json" \
+    --argjson tools "$tool_version_ids_json" \
     --argjson skills "$skill_ids_json" '
       [.[] | select(.environments | index("dev"))][0].config as $config
       | ($config.system_prompt_version_id==$system_prompt_version_id
-         and $config.prompt_env=="dev"
-         and $config.tool_ids==$tools
+         and $config.model_config_version_id==$model_config_version_id
+         and $config.generation_config.temperature==0.2
+         and $config.generation_config.max_output_tokens==2048
+         and $config.tool_version_ids==$tools
          and $config.skill_version_ids==$skills
          and $config.kb_ids==[$kb]
          and $config.allow_network==true

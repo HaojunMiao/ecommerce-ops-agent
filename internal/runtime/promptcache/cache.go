@@ -1,8 +1,5 @@
-// Package promptcache 是 Apollo 风格 Prompt 中心的客户端缓存。
-//
-// Runtime 不每次对话都查 DB——把模板、变量约束、token 估算编译成"编译产物"
-// (Compiled),放进本地 sync.Map，命中靠内存、毫秒级。Platform 改 env 指针时通过
-// Redis Pub/Sub 广播失效，Runtime 异步重拉(见 subscriber.go)。
+// Package promptcache 缓存不可变 PromptVersion 的编译产物。
+// 版本内容不可变，因此缓存直接按 versionID 命中，无需环境指针或失效广播。
 package promptcache
 
 import (
@@ -45,7 +42,7 @@ func (c *Compiled) Render(ctx context.Context, vars map[string]any) (string, err
 	return messages[0].Content, nil
 }
 
-// Cache 是 "promptID@env" → *Compiled 的本地缓存。
+// Cache 是 versionID → *Compiled 的本地缓存。
 type Cache struct {
 	mp sync.Map
 }
@@ -53,11 +50,9 @@ type Cache struct {
 // NewCache 创建缓存。
 func NewCache() *Cache { return &Cache{} }
 
-func key(promptID, env string) string { return promptID + "@" + env }
-
-// Get 取某 prompt 在某 env 当前指向版本的编译产物。
-func (c *Cache) Get(promptID, env string) (*Compiled, bool) {
-	v, ok := c.mp.Load(key(promptID, env))
+// Get 取某个不可变 PromptVersion 的编译产物。
+func (c *Cache) Get(versionID string) (*Compiled, bool) {
+	v, ok := c.mp.Load(versionID)
 	if !ok {
 		return nil, false
 	}
@@ -65,11 +60,11 @@ func (c *Cache) Get(promptID, env string) (*Compiled, bool) {
 }
 
 // Put 写入编译产物。
-func (c *Cache) Put(promptID, env string, comp *Compiled) {
-	c.mp.Store(key(promptID, env), comp)
+func (c *Cache) Put(versionID string, comp *Compiled) {
+	c.mp.Store(versionID, comp)
 }
 
-// Invalidate 失效某 prompt@env 的缓存。
-func (c *Cache) Invalidate(promptID, env string) {
-	c.mp.Delete(key(promptID, env))
+// Invalidate 仅供测试或显式清理；正常版本不会被更新，无需失效。
+func (c *Cache) Invalidate(versionID string) {
+	c.mp.Delete(versionID)
 }

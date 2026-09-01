@@ -184,14 +184,12 @@ func (h *Handler) Routes() http.Handler {
 			r.Post("/kbs/{kb_id}/search", kbHandler.Search)
 			r.Get("/kbs/{kb_id}/jobs", kbHandler.ListIngestJobs)
 
-			// Prompt 中心。
+			// Prompt 版本库（发布统一由 AgentEnv 管理）。
 			promptHandler := v1.NewPromptHandler(h.platform.Prompt)
 			r.Post("/prompts", promptHandler.CreatePrompt)
 			r.Get("/prompts", promptHandler.ListPrompts)
 			r.Post("/prompts/{prompt_id}/versions", promptHandler.CreateVersion)
 			r.Get("/prompts/{prompt_id}/versions", promptHandler.ListVersions)
-			r.Post("/prompts/{prompt_id}/promote", promptHandler.Promote)
-			r.Post("/prompts/{prompt_id}/rollback", promptHandler.Rollback)
 			r.Get("/prompts/{prompt_id}/diff", promptHandler.Diff)
 			r.Post("/prompts/{prompt_id}/render", promptHandler.Render)
 

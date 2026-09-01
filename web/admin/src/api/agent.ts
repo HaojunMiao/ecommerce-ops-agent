@@ -68,7 +68,6 @@ export interface UserPromptInputSpec {
   enabled: boolean
   prompt_id?: string
   prompt_name?: string
-  prompt_env?: string
   prompt_version_id?: string
   prompt_version?: number
   variables_schema?: string

@@ -47,6 +47,9 @@ func TestPublishGateUsesSuccessfulRunFromSameVersion(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if _, err := service.GetToolCurrentVersionID(ctx, created.ID); err == nil {
+		t.Fatal("draft tool version must not be exposed as current published version")
+	}
 	if err := store.CreateTestRun(ctx, &domain.ToolTestRun{
 		ID: util.GenerateID(), ToolID: created.ID, ToolVersionID: v1.ID,
 		Input: `{}`, Output: `ok`, Status: "success", CreatedAt: time.Now(),

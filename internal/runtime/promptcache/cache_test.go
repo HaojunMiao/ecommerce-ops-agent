@@ -45,16 +45,16 @@ func TestEstimateTokens(t *testing.T) {
 
 func TestCacheGetPutInvalidate(t *testing.T) {
 	c := NewCache()
-	if _, ok := c.Get("p1", "dev"); ok {
+	if _, ok := c.Get("v1"); ok {
 		t.Fatal("expected miss")
 	}
 	comp, _ := Compile("v1", "x", "")
-	c.Put("p1", "dev", comp)
-	if got, ok := c.Get("p1", "dev"); !ok || got.VersionID != "v1" {
+	c.Put("v1", comp)
+	if got, ok := c.Get("v1"); !ok || got.VersionID != "v1" {
 		t.Fatal("expected hit with v1")
 	}
-	c.Invalidate("p1", "dev")
-	if _, ok := c.Get("p1", "dev"); ok {
+	c.Invalidate("v1")
+	if _, ok := c.Get("v1"); ok {
 		t.Fatal("expected miss after invalidate")
 	}
 }

@@ -11,12 +11,6 @@ export interface CreatePromptRequest {
   category: string
   template: string
   variables_schema: string
-  model_config_version_id: string
-  generation_config?: {
-    temperature?: number
-    top_p?: number
-    max_output_tokens?: number
-  }
 }
 
 export async function createPrompt(req: CreatePromptRequest): Promise<{ prompt: Prompt; version: PromptVersion }> {
@@ -33,28 +27,15 @@ export async function createVersion(
   promptId: string,
   template: string,
   variablesSchema: string,
-  modelConfigVersionId: string,
-  generationConfig?: Record<string, unknown>,
 ): Promise<PromptVersion> {
   const { data } = await api.post<PromptVersion>(`/prompts/${promptId}/versions`, {
     template,
     variables_schema: variablesSchema,
-    model_config_version_id: modelConfigVersionId,
-    generation_config: generationConfig ?? {},
   })
   return data
 }
 
-// 晋升 / 回滚:改 env 指针(dev/staging/prod)。
-export async function promote(promptId: string, env: string, versionId: string): Promise<void> {
-  await api.post(`/prompts/${promptId}/promote`, { env, version_id: versionId })
-}
-
-export async function rollback(promptId: string, env: string, versionId: string): Promise<void> {
-  await api.post(`/prompts/${promptId}/rollback`, { env, version_id: versionId })
-}
-
-export async function render(promptId: string, env: string, vars: Record<string, unknown>): Promise<string> {
-  const { data } = await api.post<{ rendered: string }>(`/prompts/${promptId}/render`, { env, vars })
+export async function render(promptId: string, versionId: string, vars: Record<string, unknown>): Promise<string> {
+  const { data } = await api.post<{ rendered: string }>(`/prompts/${promptId}/render`, { version_id: versionId, vars })
   return data.rendered
 }

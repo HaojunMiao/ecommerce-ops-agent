@@ -4,6 +4,8 @@ definitions:
     properties:
       allow_network:
         type: boolean
+      generation_config:
+        $ref: '#/definitions/domain.GenerationConfig'
       kb_ids:
         items:
           type: string
@@ -11,25 +13,18 @@ definitions:
       max_steps:
         type: integer
       model_config_version_id:
-        description: 只读：由 system prompt 版本派生
-        type: string
-      prompt_env:
         type: string
       skill_version_ids:
         items:
           type: string
         type: array
-      system_prompt:
-        type: string
-      system_prompt_id:
-        type: string
       system_prompt_version_id:
         type: string
-      tool_ids:
+      tool_version_ids:
         items:
           type: string
         type: array
-      user_prompt_id:
+      user_prompt_version_id:
         type: string
     type: object
   agent.AgentVersionView:
@@ -57,37 +52,31 @@ definitions:
         type: boolean
       created_by:
         type: string
+      generation_config:
+        $ref: '#/definitions/domain.GenerationConfig'
       kb_ids:
         items:
           type: string
         type: array
       max_steps:
         type: integer
-      name:
+      model_config_version_id:
         type: string
-      prompt_env:
+      name:
         type: string
       skill_version_ids:
         items:
           type: string
         type: array
-      system_prompt:
-        description: 字面量
-        type: string
-      system_prompt_id:
-        description: 推荐：绑定 Prompt，创建会话时按环境解析版本
-        type: string
       system_prompt_version_id:
-        description: 或绑定 Prompt 中心版本
         type: string
       template:
         type: string
-      tool_ids:
+      tool_version_ids:
         items:
           type: string
         type: array
-      user_prompt_id:
-        description: 可选：首轮任务输入模板
+      user_prompt_version_id:
         type: string
       workspace_id:
         type: string
@@ -96,8 +85,6 @@ definitions:
     properties:
       enabled:
         type: boolean
-      prompt_env:
-        type: string
       prompt_id:
         type: string
       prompt_name:
@@ -163,8 +150,6 @@ definitions:
     properties:
       created_by:
         type: string
-      embedding_model:
-        type: string
       name:
         type: string
       workspace_id:
@@ -208,10 +193,6 @@ definitions:
       category:
         type: string
       created_by:
-        type: string
-      generation_config:
-        $ref: '#/definitions/domain.GenerationConfig'
-      model_config_version_id:
         type: string
       name:
         type: string
@@ -768,26 +749,6 @@ paths:
       security:
       - BearerAuth: []
       summary: 创建 Prompt(含 v1)
-      tags:
-      - prompts
-  /prompts/{prompt_id}/promote:
-    post:
-      parameters:
-      - description: Prompt ID
-        in: path
-        name: prompt_id
-        required: true
-        type: string
-      responses:
-        "200":
-          description: OK
-          schema:
-            additionalProperties:
-              type: string
-            type: object
-      security:
-      - BearerAuth: []
-      summary: 晋升 Prompt 版本到某环境
       tags:
       - prompts
   /skills:

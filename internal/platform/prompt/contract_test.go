@@ -78,34 +78,6 @@ func runPromptStoreContract(t *testing.T, newStore func(t *testing.T) prompt.Sto
 		}
 	})
 
-	t.Run("EnvBindingPromoteAndRead", func(t *testing.T) {
-		s := newStore(t)
-		ctx := context.Background()
-		p := &domain.Prompt{ID: util.GenerateID(), WorkspaceID: ws, Name: "p", CreatedBy: "u1"}
-		_ = s.CreatePrompt(ctx, p)
-		v := &domain.PromptVersion{ID: util.GenerateID(), PromptID: p.ID, Version: 1, Template: "x", VariablesSchema: "{}", Hash: "h", CreatedBy: "u1"}
-		_ = s.CreatePromptVersion(ctx, v)
-
-		if _, err := s.GetEnvBinding(ctx, p.ID, "prod"); err == nil {
-			t.Fatal("expected error for unbound env")
-		}
-		if err := s.SetEnvBinding(ctx, p.ID, "prod", v.ID); err != nil {
-			t.Fatalf("SetEnvBinding: %v", err)
-		}
-		boundID, err := s.GetEnvBinding(ctx, p.ID, "prod")
-		if err != nil {
-			t.Fatalf("GetEnvBinding: %v", err)
-		}
-		// ID 格式两实现可能不同,用查得的 ID 解引用验证指向 v。
-		bound, err := s.GetPromptVersion(ctx, boundID)
-		if err != nil {
-			t.Fatalf("GetPromptVersion(bound): %v", err)
-		}
-		if bound.Hash != "h" || bound.Version != 1 {
-			t.Fatalf("bound version mismatch: %+v", bound)
-		}
-	})
-
 }
 
 func TestMemoryPromptStore_Contract(t *testing.T) {

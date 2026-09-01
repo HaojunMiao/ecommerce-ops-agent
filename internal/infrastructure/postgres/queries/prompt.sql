@@ -1,4 +1,4 @@
--- Prompt:不可变版本与环境绑定。
+-- Prompt:不可变模板版本。发布由 AgentEnv 统一管理。
 
 -- name: GetPrompt :one
 SELECT * FROM prompts WHERE id = $1 LIMIT 1;
@@ -24,12 +24,3 @@ SELECT * FROM prompt_versions WHERE prompt_id = $1 ORDER BY version;
 INSERT INTO prompt_versions (id, prompt_id, version, template, variables_schema, hash, token_estimate, created_by, created_at)
 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, now())
 RETURNING *;
-
--- name: GetPromptEnv :one
-SELECT version_id FROM prompt_envs WHERE prompt_id = $1 AND env = $2 LIMIT 1;
-
--- name: UpsertPromptEnv :exec
-INSERT INTO prompt_envs (prompt_id, env, version_id, updated_at)
-VALUES ($1, $2, $3, now())
-ON CONFLICT (prompt_id, env) DO UPDATE
-SET version_id = EXCLUDED.version_id, updated_at = now();

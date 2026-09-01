@@ -288,13 +288,6 @@ type Prompt struct {
 	UpdatedAt   time.Time
 }
 
-type PromptEnv struct {
-	PromptID  uuid.UUID
-	Env       string
-	VersionID uuid.UUID
-	UpdatedAt time.Time
-}
-
 type PromptVersion struct {
 	ID              uuid.UUID
 	PromptID        uuid.UUID
@@ -305,12 +298,6 @@ type PromptVersion struct {
 	TokenEstimate   int32
 	CreatedBy       string
 	CreatedAt       time.Time
-}
-
-type PromptVersionConfig struct {
-	PromptVersionID      uuid.UUID
-	ModelConfigVersionID pgtype.UUID
-	GenerationConfig     []byte
 }
 
 type Role struct {

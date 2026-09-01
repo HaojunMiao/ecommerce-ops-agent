@@ -19,6 +19,7 @@ import {
   getConversation,
   getUserPromptInputSpec,
   listAgents,
+  listAgentVersions,
   listConversations,
   streamChat,
   type AgentStreamEvent,
@@ -209,6 +210,15 @@ export function ConversationsPage() {
     queryFn: () => getUserPromptInputSpec(agentId!, agentEnv),
     enabled: !!workspaceId && !!agentId && !conversationId,
   })
+  const agentVersionsQ = useQuery({
+    queryKey: ['agent-versions', agentId],
+    queryFn: () => listAgentVersions(agentId!),
+    enabled: !!workspaceId && !!agentId && !!pinnedVersionId,
+  })
+  const pinnedVersion = useMemo(
+    () => agentVersionsQ.data?.find((version) => version.id === pinnedVersionId),
+    [agentVersionsQ.data, pinnedVersionId],
+  )
   const userPromptSchema = useMemo(
     () => parseVariablesSchema(userPromptSpecQ.data?.variables_schema),
     [userPromptSpecQ.data?.variables_schema],
@@ -603,7 +613,13 @@ export function ConversationsPage() {
         />
         <Button onClick={resetConversation} disabled={items.length === 0}>新会话</Button>
         {conversationId && <Tag color="blue">Conversation {conversationId.slice(0, 8)}</Tag>}
-        {pinnedVersionId && <Tag color="purple">Agent Version {pinnedVersionId.slice(0, 8)}</Tag>}
+        {pinnedVersionId && (
+          <Tooltip title={`Agent Version ID: ${pinnedVersionId}`}>
+            <Tag color="purple">
+              Agent Version {pinnedVersion ? `v${pinnedVersion.version}` : pinnedVersionId.slice(0, 8)}
+            </Tag>
+          </Tooltip>
+        )}
         {langfuseURL && (
           <Button type="link" href={langfuseURL} target="_blank" icon={<LinkOutlined />}>
             {latestTraceId ? `Langfuse Trace ${latestTraceId.slice(0, 8)}` : `Langfuse Session ${conversationId?.slice(0, 8)}`}
@@ -634,7 +650,6 @@ export function ConversationsPage() {
             </div>
             <div className="task-composer-meta">
               <Tag color="purple">模板 v{userPromptSpecQ.data?.prompt_version}</Tag>
-              <Tag>{userPromptSpecQ.data?.prompt_env}</Tag>
               <Tooltip title="实际模板版本、变量和渲染结果均由服务端记录">
                 <span className="task-audit-note"><SafetyCertificateOutlined /> 可审计</span>
               </Tooltip>

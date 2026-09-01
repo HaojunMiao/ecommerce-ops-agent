@@ -43,7 +43,6 @@ type Service struct {
 	// Runtime 依赖（数据面）
 	Registry    *tooling.Registry
 	Retriever   retriever.Searcher
-	PromptCache *promptcache.Cache
 	Guard       *guard.Guard
 	EmbedCache  *cache.EmbeddingCache
 }
@@ -61,11 +60,10 @@ const pgvectorDim = 2048
 const rateLimitPerMin = 1000
 
 // NewService 创建平台服务。
-//   - pub:Prompt 失效广播器(无 Redis 传 nil)。
 //   - embedder:KB 向量化嵌入器(nil 时默认 LocalEmbedder(256),仅内存路径用)。
 //   - kbEnqueuer:KB ingest 异步投递器(nil 时 Sync 走进程内同步 ingest)。
-func NewService(db *pgxpool.Pool, rds *redis.Client, jwtKey []byte, pub prompt.Publisher, embedder retriever.Embedder, kbEnqueuer kb.TaskEnqueuer, credentialKeys ...[]byte) *Service {
-	return newService(db, rds, jwtKey, pub, embedder, kbEnqueuer, nil, 0, credentialKeys...)
+func NewService(db *pgxpool.Pool, rds *redis.Client, jwtKey []byte, embedder retriever.Embedder, kbEnqueuer kb.TaskEnqueuer, credentialKeys ...[]byte) *Service {
+	return newService(db, rds, jwtKey, embedder, kbEnqueuer, nil, 0, credentialKeys...)
 }
 
 // NewServiceWithReranker 在服务端检索链路启用可选模型重排；worker 无需构造它。
@@ -73,7 +71,6 @@ func NewServiceWithReranker(
 	db *pgxpool.Pool,
 	rds *redis.Client,
 	jwtKey []byte,
-	pub prompt.Publisher,
 	embedder retriever.Embedder,
 	kbEnqueuer kb.TaskEnqueuer,
 	reranker retriever.Reranker,
@@ -81,7 +78,7 @@ func NewServiceWithReranker(
 	credentialKeys ...[]byte,
 ) *Service {
 	return newService(
-		db, rds, jwtKey, pub, embedder, kbEnqueuer,
+		db, rds, jwtKey, embedder, kbEnqueuer,
 		reranker, rerankerCandidateK, credentialKeys...,
 	)
 }
@@ -90,7 +87,6 @@ func newService(
 	db *pgxpool.Pool,
 	rds *redis.Client,
 	jwtKey []byte,
-	pub prompt.Publisher,
 	embedder retriever.Embedder,
 	kbEnqueuer kb.TaskEnqueuer,
 	reranker retriever.Reranker,
@@ -174,11 +170,13 @@ func newService(
 		log.Fatalf("initialize credential cipher: %v", err)
 	}
 	modelService := modelconfig.NewService(modelStore)
-	promptService := prompt.NewService(promptStore, pcache, pub).WithModelConfigs(modelService)
+	promptService := prompt.NewService(promptStore, pcache)
 	toolService := tool.NewService(toolStore)
 	toolService.ConfigureSecurity(credentialCipher, nil)
 	skillService := skill.NewService(skillStore, toolService).WithKBChecker(kbService)
-	agentService := agent.NewService(agentStore, promptService, skillService, toolService).WithKBResolver(kbService)
+	agentService := agent.NewService(agentStore, promptService, skillService, toolService).
+		WithKBResolver(kbService).
+		WithModelConfigs(modelService)
 	registry := tooling.NewRegistry(toolService)
 	// 把 KB 检索注册为 internal_sdk 工具的执行器。
 	registry.RegisterSDK(KBSearchSDKName,
@@ -198,7 +196,6 @@ func newService(
 		Approvals:   apprStore,
 		Registry:    registry,
 		Retriever:   kbSearcher,
-		PromptCache: pcache,
 		Guard:       guardEngine,
 		EmbedCache:  embedCache,
 	}

@@ -1,11 +1,10 @@
-import { Table, Button, Modal, Form, Input, InputNumber, Space, Typography, Tag, Alert, message } from 'antd'
+import { Table, Button, Modal, Form, Input, Space, Typography, Tag, Alert, message } from 'antd'
 import { PlusOutlined } from '@ant-design/icons'
 import { useState } from 'react'
 import { useLocation } from 'wouter'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { listPrompts, createPrompt, type CreatePromptRequest } from '@/api/prompt'
 import { CodeEditor } from '@/components/CodeEditor'
-import { ModelConfigVersionSelect } from '@/components/ModelConfigVersionSelect'
 import { fmtTime } from '@/lib/format'
 import { useAuthStore } from '@/store/authStore'
 
@@ -19,10 +18,6 @@ export function PromptsPage() {
   const [form] = Form.useForm<{
     name: string
     category: string
-    model_config_version_id: string
-    temperature?: number
-    top_p?: number
-    max_output_tokens?: number
   }>()
 
   const { data = [], isLoading } = useQuery({
@@ -34,7 +29,7 @@ export function PromptsPage() {
   const create = useMutation({
     mutationFn: (req: CreatePromptRequest) => createPrompt(req),
     onSuccess: ({ prompt, version }) => {
-      message.success(`已创建 Prompt v${version.version}，模型路由已固化`)
+      message.success(`已创建 Prompt v${version.version}`)
       setOpen(false)
       form.resetFields()
       qc.invalidateQueries({ queryKey: ['prompts'] })
@@ -86,15 +81,10 @@ export function PromptsPage() {
           form={form}
           layout="vertical"
           initialValues={{ category: 'general' }}
-          onFinish={({ temperature, top_p, max_output_tokens, ...values }) => create.mutate({
+          onFinish={(values) => create.mutate({
             ...values,
             template,
             variables_schema: schema,
-            generation_config: {
-              ...(temperature == null ? {} : { temperature }),
-              ...(top_p == null ? {} : { top_p }),
-              ...(max_output_tokens == null ? {} : { max_output_tokens }),
-            },
           })}
         >
           <Space style={{ width: '100%' }} size="large">
@@ -111,28 +101,13 @@ export function PromptsPage() {
             变量定义(JSON Schema)
           </Typography.Text>
           <CodeEditor value={schema} onChange={setSchema} language="json" height={140} />
-          <Typography.Title level={5} style={{ marginTop: 18 }}>模型路由</Typography.Title>
           <Alert
             type="info"
             showIcon
-            style={{ marginBottom: 12 }}
-            message="Model Config Version 会固化到 Prompt v1"
-            description="Prompt 版本、Agent 快照、会话与调用日志将共用这一个固定版本 ID。"
+            style={{ marginTop: 16 }}
+            message="PromptVersion 只保存模板与变量契约"
+            description="模型配置和生成参数在创建 AgentVersion 时选择并固化。"
           />
-          <Form.Item name="model_config_version_id" label="Model Config Version" rules={[{ required: true, message: '请选择模型配置版本' }]}>
-            <ModelConfigVersionSelect style={{ width: '100%' }} />
-          </Form.Item>
-          <Space wrap align="start">
-            <Form.Item name="temperature" label="temperature">
-              <InputNumber min={0} max={2} step={0.1} placeholder="Provider 默认值" />
-            </Form.Item>
-            <Form.Item name="top_p" label="top_p">
-              <InputNumber min={0} max={1} step={0.1} placeholder="Provider 默认值" />
-            </Form.Item>
-            <Form.Item name="max_output_tokens" label="max tokens">
-              <InputNumber min={1} placeholder="Provider 默认值" />
-            </Form.Item>
-          </Space>
         </Form>
       </Modal>
     </div>

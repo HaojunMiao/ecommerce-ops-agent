@@ -94,7 +94,7 @@ const getPrompt = `-- name: GetPrompt :one
 SELECT id, workspace_id, name, category, created_by, created_at, updated_at FROM prompts WHERE id = $1 LIMIT 1
 `
 
-// Prompt:不可变版本与环境绑定。
+// Prompt:不可变模板版本。
 func (q *Queries) GetPrompt(ctx context.Context, id uuid.UUID) (Prompt, error) {
 	row := q.db.QueryRow(ctx, getPrompt, id)
 	var i Prompt
@@ -108,22 +108,6 @@ func (q *Queries) GetPrompt(ctx context.Context, id uuid.UUID) (Prompt, error) {
 		&i.UpdatedAt,
 	)
 	return i, err
-}
-
-const getPromptEnv = `-- name: GetPromptEnv :one
-SELECT version_id FROM prompt_envs WHERE prompt_id = $1 AND env = $2 LIMIT 1
-`
-
-type GetPromptEnvParams struct {
-	PromptID uuid.UUID
-	Env      string
-}
-
-func (q *Queries) GetPromptEnv(ctx context.Context, arg GetPromptEnvParams) (uuid.UUID, error) {
-	row := q.db.QueryRow(ctx, getPromptEnv, arg.PromptID, arg.Env)
-	var version_id uuid.UUID
-	err := row.Scan(&version_id)
-	return version_id, err
 }
 
 const getPromptVersion = `-- name: GetPromptVersion :one
@@ -237,22 +221,4 @@ func (q *Queries) ListPrompts(ctx context.Context, workspaceID string) ([]Prompt
 		return nil, err
 	}
 	return items, nil
-}
-
-const upsertPromptEnv = `-- name: UpsertPromptEnv :exec
-INSERT INTO prompt_envs (prompt_id, env, version_id, updated_at)
-VALUES ($1, $2, $3, now())
-ON CONFLICT (prompt_id, env) DO UPDATE
-SET version_id = EXCLUDED.version_id, updated_at = now()
-`
-
-type UpsertPromptEnvParams struct {
-	PromptID  uuid.UUID
-	Env       string
-	VersionID uuid.UUID
-}
-
-func (q *Queries) UpsertPromptEnv(ctx context.Context, arg UpsertPromptEnvParams) error {
-	_, err := q.db.Exec(ctx, upsertPromptEnv, arg.PromptID, arg.Env, arg.VersionID)
-	return err
 }

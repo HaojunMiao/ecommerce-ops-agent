@@ -1,5 +1,5 @@
 import {
-  Alert, Tabs, Card, Button, Space, Typography, Select, Table, Tag, Modal, Input, InputNumber, Result, Spin, message,
+  Alert, Tabs, Card, Button, Space, Typography, Select, Table, Tag, Input, Result, Spin, message,
 } from 'antd'
 import { ArrowLeftOutlined, SaveOutlined } from '@ant-design/icons'
 import { Component, useMemo, useState, type ComponentType, type ErrorInfo, type ReactNode } from 'react'
@@ -7,14 +7,11 @@ import { useLocation, useRoute } from 'wouter'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import ReactDiffViewerImport, { type ReactDiffViewerProps } from 'react-diff-viewer-continued'
 import {
-  listPrompts, listVersions, createVersion, promote, render as renderPrompt,
+  listPrompts, listVersions, createVersion, render as renderPrompt,
 } from '@/api/prompt'
 import type { PromptVersion } from '@/api/types'
 import { CodeEditor } from '@/components/CodeEditor'
-import { ModelConfigVersionSelect } from '@/components/ModelConfigVersionSelect'
 import { fmtTime } from '@/lib/format'
-
-const ENVS = ['dev', 'staging', 'prod']
 
 // react-diff-viewer-continued 3.x publishes a double-wrapped CommonJS default
 // export. Vite 8 keeps that wrapper in production builds, so a direct default
@@ -90,16 +87,8 @@ export function PromptDetailPage() {
 function EditorTab({ promptId, latest, onSaved }: { promptId: string; latest?: PromptVersion; onSaved: () => void }) {
   const [template, setTemplate] = useState(latest?.template ?? '')
   const [schema, setSchema] = useState(latest?.variables_schema ?? '{}')
-  const [modelConfigVersionId, setModelConfigVersionId] = useState(latest?.model_config_version_id)
-  const [temperature, setTemperature] = useState<number | null>(latest?.generation_config?.temperature ?? null)
-  const [topP, setTopP] = useState<number | null>(latest?.generation_config?.top_p ?? null)
-  const [maxTokens, setMaxTokens] = useState<number | null>(latest?.generation_config?.max_output_tokens ?? null)
   const save = useMutation({
-    mutationFn: () => createVersion(promptId, template, schema, modelConfigVersionId ?? '', {
-      ...(temperature == null ? {} : { temperature }),
-      ...(topP == null ? {} : { top_p: topP }),
-      ...(maxTokens == null ? {} : { max_output_tokens: maxTokens }),
-    }),
+    mutationFn: () => createVersion(promptId, template, schema),
     onSuccess: (v) => {
       message.success(`已保存为 v${v.version}(token≈${v.token_estimate})`)
       onSaved()
@@ -113,7 +102,7 @@ function EditorTab({ promptId, latest, onSaved }: { promptId: string; latest?: P
         <Typography.Text type="secondary">
           当前最新:{latest ? `v${latest.version} · token≈${latest.token_estimate} · ${latest.hash.slice(0, 8)}` : '无版本'}
         </Typography.Text>
-        <Button type="primary" icon={<SaveOutlined />} loading={save.isPending} disabled={!modelConfigVersionId} onClick={() => save.mutate()}>
+        <Button type="primary" icon={<SaveOutlined />} loading={save.isPending} onClick={() => save.mutate()}>
           保存为新版本
         </Button>
       </Space>
@@ -123,36 +112,14 @@ function EditorTab({ promptId, latest, onSaved }: { promptId: string; latest?: P
         变量定义(JSON Schema)
       </Typography.Text>
       <CodeEditor value={schema} onChange={setSchema} language="json" height={140} />
-      <Typography.Title level={5} style={{ marginTop: 18 }}>模型与生成参数</Typography.Title>
-      <Space wrap>
-        <ModelConfigVersionSelect
-          placeholder="选择 Model Config Version"
-          style={{ width: 360 }}
-          value={modelConfigVersionId}
-          onChange={setModelConfigVersionId}
-        />
-        <InputNumber placeholder="temperature" min={0} max={2} step={0.1} value={temperature} onChange={setTemperature} />
-        <InputNumber placeholder="top_p" min={0} max={1} step={0.1} value={topP} onChange={setTopP} />
-        <InputNumber placeholder="max tokens" min={1} value={maxTokens} onChange={setMaxTokens} />
-      </Space>
+      <Alert type="info" showIcon style={{ marginTop: 16 }} message="模型配置与生成参数由 AgentVersion 管理" />
     </Card>
   )
 }
 
-// --- Versions:列表 + Promote(带二次确认 + 选 env)---
-function VersionsTab({ promptId, versions }: { promptId: string; versions: PromptVersion[] }) {
-  const [target, setTarget] = useState<{ v: PromptVersion; env: string } | null>(null)
-
-  const doPromote = useMutation({
-    mutationFn: () => promote(promptId, target!.env, target!.v.id),
-    onSuccess: () => {
-      message.success(`v${target!.v.version} 已晋升到 ${target!.env}`)
-      setTarget(null)
-    },
-  })
-
+// --- Versions:不可变模板版本列表 ---
+function VersionsTab({ versions }: { promptId: string; versions: PromptVersion[] }) {
   return (
-    <>
       <Table
         rowKey="id"
         dataSource={versions}
@@ -161,39 +128,9 @@ function VersionsTab({ promptId, versions }: { promptId: string; versions: Promp
           { title: '版本', dataIndex: 'version', render: (v: number) => <Tag color="blue">v{v}</Tag> },
           { title: 'Hash', dataIndex: 'hash', render: (v: string) => <code>{v?.slice(0, 12)}</code> },
           { title: 'Token 估算', dataIndex: 'token_estimate' },
-          { title: 'Model Config', dataIndex: 'model_config_version_id', render: (v: string) => v ? <code>{v.slice(0, 8)}</code> : <Tag color="red">无效历史版本</Tag> },
           { title: '创建时间', dataIndex: 'created_at', render: fmtTime },
-          {
-            title: '晋升',
-            render: (_, row: PromptVersion) => (
-              <Space>
-                {ENVS.map((env) => (
-                  <Button key={env} size="small" onClick={() => setTarget({ v: row, env })}>
-                    → {env}
-                  </Button>
-                ))}
-              </Space>
-            ),
-          },
         ]}
       />
-      <Modal
-        title="确认晋升"
-        open={!!target}
-        onCancel={() => setTarget(null)}
-        onOk={() => doPromote.mutate()}
-        confirmLoading={doPromote.isPending}
-        okText="确认晋升"
-      >
-        {target && (
-          <Typography.Text>
-            将 <Tag color="blue">v{target.v.version}</Tag> 绑定到环境{' '}
-            <Tag color={target.env === 'prod' ? 'red' : 'green'}>{target.env}</Tag>。
-            {target.env === 'prod' && <Typography.Paragraph type="danger">这是生产环境,请确认!</Typography.Paragraph>}
-          </Typography.Text>
-        )}
-      </Modal>
-    </>
   )
 }
 
@@ -224,9 +161,11 @@ function DiffTab({ versions }: { versions: PromptVersion[] }) {
   )
 }
 
-// --- Render:env + vars(JSON)→ 渲染结果 ---
+// --- Render:指定 PromptVersion + vars(JSON)→ 渲染结果 ---
 function RenderTab({ promptId }: { promptId: string }) {
-  const [env, setEnv] = useState('dev')
+  const versionsQ = useQuery({ queryKey: ['prompt-versions', promptId], queryFn: () => listVersions(promptId) })
+  const [versionId, setVersionId] = useState<string>()
+  const selectedVersionId = versionId ?? versionsQ.data?.at(-1)?.id
   const [vars, setVars] = useState('{\n  "question": "怎么退款?"\n}')
   const [result, setResult] = useState('')
 
@@ -238,7 +177,8 @@ function RenderTab({ promptId }: { promptId: string }) {
       } catch {
         throw new Error('变量 JSON 无效')
       }
-      return renderPrompt(promptId, env, parsed)
+      if (!selectedVersionId) throw new Error('请选择 Prompt 版本')
+      return renderPrompt(promptId, selectedVersionId, parsed)
     },
     onSuccess: setResult,
     onError: (e: Error) => message.error(e.message),
@@ -247,8 +187,13 @@ function RenderTab({ promptId }: { promptId: string }) {
   return (
     <Card>
       <Space style={{ marginBottom: 12 }}>
-        <span>环境</span>
-        <Select style={{ width: 140 }} value={env} onChange={setEnv} options={ENVS.map((e) => ({ value: e, label: e }))} />
+        <span>版本</span>
+        <Select
+          style={{ width: 140 }}
+          value={selectedVersionId}
+          onChange={setVersionId}
+          options={(versionsQ.data ?? []).map((v) => ({ value: v.id, label: `v${v.version}` }))}
+        />
         <Button type="primary" loading={run.isPending} onClick={() => run.mutate()}>
           渲染
         </Button>
@@ -258,7 +203,7 @@ function RenderTab({ promptId }: { promptId: string }) {
       <Typography.Text type="secondary" style={{ display: 'block', marginTop: 12 }}>
         渲染结果
       </Typography.Text>
-      <Input.TextArea value={result} readOnly rows={8} placeholder="点「渲染」查看解析 env 指针 / A-B 后的最终文本" />
+      <Input.TextArea value={result} readOnly rows={8} placeholder="点「渲染」查看该不可变版本的最终文本" />
     </Card>
   )
 }

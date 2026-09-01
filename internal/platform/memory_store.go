@@ -289,12 +289,11 @@ func (s *MemoryIAMStore) DeleteWorkspaceMemberGuarded(
 	return true, nil
 }
 
-// MemoryPromptStore 保存不可变版本及环境指针。
+// MemoryPromptStore 保存不可变 Prompt 版本。
 type MemoryPromptStore struct {
 	mu       sync.RWMutex
 	prompts  map[string]*domain.Prompt
 	versions map[string]*domain.PromptVersion
-	bindings map[string]map[string]string // promptID -> env -> versionID
 }
 
 // NewMemoryPromptStore 创建Prompt内存存储
@@ -302,7 +301,6 @@ func NewMemoryPromptStore() *MemoryPromptStore {
 	return &MemoryPromptStore{
 		prompts:  make(map[string]*domain.Prompt),
 		versions: make(map[string]*domain.PromptVersion),
-		bindings: make(map[string]map[string]string),
 	}
 }
 
@@ -310,9 +308,6 @@ func (s *MemoryPromptStore) CreatePrompt(ctx context.Context, prompt *domain.Pro
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.prompts[prompt.ID] = prompt
-	if s.bindings[prompt.ID] == nil {
-		s.bindings[prompt.ID] = make(map[string]string)
-	}
 	return nil
 }
 
@@ -320,7 +315,6 @@ func (s *MemoryPromptStore) DeletePrompt(ctx context.Context, promptID string) e
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	delete(s.prompts, promptID)
-	delete(s.bindings, promptID)
 	for id, version := range s.versions {
 		if version.PromptID == promptID {
 			delete(s.versions, id)
@@ -352,7 +346,7 @@ func (s *MemoryPromptStore) ListPrompts(ctx context.Context, workspaceID string)
 	return out, nil
 }
 
-// CreatePromptVersion 仅 insert（immutable），不动 env 指针。
+// CreatePromptVersion 仅 insert（immutable）。
 func (s *MemoryPromptStore) CreatePromptVersion(ctx context.Context, version *domain.PromptVersion) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -392,31 +386,6 @@ func (s *MemoryPromptStore) ListPromptVersions(ctx context.Context, promptID str
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Version < out[j].Version })
 	return out, nil
-}
-
-// SetEnvBinding 改 env 指针（= "发布"/回滚）。
-func (s *MemoryPromptStore) SetEnvBinding(ctx context.Context, promptID, env, versionID string) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.bindings[promptID] == nil {
-		s.bindings[promptID] = make(map[string]string)
-	}
-	s.bindings[promptID][env] = versionID
-	return nil
-}
-
-func (s *MemoryPromptStore) GetEnvBinding(ctx context.Context, promptID, env string) (string, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	b, ok := s.bindings[promptID]
-	if !ok {
-		return "", fmt.Errorf("prompt not found")
-	}
-	vid, ok := b[env]
-	if !ok {
-		return "", fmt.Errorf("no version bound for env %s", env)
-	}
-	return vid, nil
 }
 
 // MemoryAgentStore Agent内存存储
@@ -649,7 +618,7 @@ func (s *MemoryAgentStore) ReleaseConversationTurn(_ context.Context, conversati
 	return s.CommitConversationTurn(context.Background(), conversationID, token, nil, nextStatus)
 }
 
-// UpdateConversationRuntimeConfig 更新会话实际使用的 Prompt 版本与渲染输入快照。
+// UpdateConversationRuntimeConfig 更新会话自身的观测与首轮输入快照。
 func (s *MemoryAgentStore) UpdateConversationRuntimeConfig(_ context.Context, conversationID, configJSON string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()

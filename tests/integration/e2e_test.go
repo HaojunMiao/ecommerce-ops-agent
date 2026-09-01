@@ -44,14 +44,14 @@ func ensureTestModelConfig(t *testing.T, ctx context.Context, plat *platform.Ser
 
 func createTestSystemPrompt(t *testing.T, ctx context.Context, plat *platform.Service, workspaceID string) string {
 	t.Helper()
-	p, _, err := plat.Prompt.CreatePrompt(ctx, prompt.CreatePromptRequest{
+	_, v, err := plat.Prompt.CreatePrompt(ctx, prompt.CreatePromptRequest{
 		WorkspaceID: workspaceID, Name: "test-system", Category: "test-system", Template: "你是助手",
-		VariablesSchema: `{}`, ModelConfigVersionID: ensureTestModelConfig(t, ctx, plat, workspaceID), CreatedBy: "test",
+		VariablesSchema: `{}`, CreatedBy: "test",
 	})
 	if err != nil {
 		t.Fatalf("create test system prompt: %v", err)
 	}
-	return p.ID
+	return v.ID
 }
 
 // scriptedChatModel：第一次（有工具时）调用工具，第二次给最终回答。
@@ -84,7 +84,7 @@ func (g *scriptedChatModel) Stream(ctx context.Context, messages []*schema.Messa
 
 func TestPlatformCRUDFlow(t *testing.T) {
 	ctx := context.Background()
-	plat := platform.NewService(nil, nil, make([]byte, 32), prompt.NoopPublisher{}, nil, nil)
+	plat := platform.NewService(nil, nil, make([]byte, 32), nil, nil)
 
 	// IAM：建用户 + workspace。
 	if _, err := plat.IAM.CreateUser(ctx, "admin@example.com", "secret123", "Admin"); err != nil {
@@ -99,14 +99,14 @@ func TestPlatformCRUDFlow(t *testing.T) {
 	}
 
 	// Prompt：创建并渲染。
-	p, _, err := plat.Prompt.CreatePrompt(ctx, prompt.CreatePromptRequest{
+	_, v, err := plat.Prompt.CreatePrompt(ctx, prompt.CreatePromptRequest{
 		WorkspaceID: ws.ID, Name: "sys", Template: "你是客服助手",
-		ModelConfigVersionID: ensureTestModelConfig(t, ctx, plat, ws.ID), CreatedBy: "u1",
+		CreatedBy: "u1",
 	})
 	if err != nil {
 		t.Fatalf("create prompt: %v", err)
 	}
-	if _, err := plat.Prompt.Render(ctx, p.ID, prompt.EnvDev, "u1", nil); err != nil {
+	if _, err := plat.Prompt.RenderByVersion(ctx, v.ID, nil); err != nil {
 		t.Fatalf("render prompt: %v", err)
 	}
 
@@ -143,7 +143,7 @@ func TestPlatformCRUDFlow(t *testing.T) {
 
 func TestRuntimeToolCallE2E(t *testing.T) {
 	ctx := context.Background()
-	plat := platform.NewService(nil, nil, make([]byte, 32), prompt.NoopPublisher{}, nil, nil)
+	plat := platform.NewService(nil, nil, make([]byte, 32), nil, nil)
 
 	// 一个被工具调用命中的 REST 端点。
 	var hits int
@@ -169,10 +169,15 @@ func TestRuntimeToolCallE2E(t *testing.T) {
 	if err := plat.Tool.PublishTool(ctx, tl.ID); err != nil {
 		t.Fatalf("publish tool: %v", err)
 	}
+	toolVersion, err := plat.Tool.GetToolCurrentVersion(ctx, tl.ID)
+	if err != nil {
+		t.Fatalf("get published tool version: %v", err)
+	}
 
 	// 创建挂了该工具的 Agent。
 	ag, err := plat.Agent.CreateAgent(ctx, agent.CreateAgentRequest{
-		WorkspaceID: "w1", Name: "bot", SystemPromptID: createTestSystemPrompt(t, ctx, plat, "w1"), ToolIDs: []string{tl.ID}, CreatedBy: "u1",
+		WorkspaceID: "w1", Name: "bot", SystemPromptVersionID: createTestSystemPrompt(t, ctx, plat, "w1"),
+		ModelConfigVersionID: ensureTestModelConfig(t, ctx, plat, "w1"), ToolVersionIDs: []string{toolVersion.ID}, CreatedBy: "u1",
 	})
 	if err != nil {
 		t.Fatalf("create agent: %v", err)

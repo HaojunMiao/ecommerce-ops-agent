@@ -27,8 +27,8 @@ func TestSnapshotPinsToolVersion(t *testing.T) {
 	toolStore := platform.NewMemoryToolStore()
 	agentStore := platform.NewMemoryAgentStore()
 	toolSvc := tool.NewService(toolStore)
-	promptSvc, systemPromptID := newVersionedSystemPrompt(t, "w1")
-	agentSvc := agent.NewService(agentStore, promptSvc, nil, toolSvc)
+	promptSvc, systemPromptVersionID := newVersionedSystemPrompt(t, "w1")
+	agentSvc := agent.NewService(agentStore, promptSvc, nil, toolSvc).WithModelConfigs(testModelValidator{})
 
 	// 1) 建工具,初始版本 v1:REST 指向 /v1,参数为 q。
 	tl, err := toolSvc.CreateTool(ctx, tool.CreateToolRequest{
@@ -46,14 +46,15 @@ func TestSnapshotPinsToolVersion(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get v1: %v", err)
 	}
+	if err := toolStore.UpdateToolVersionStatus(ctx, v1.ID, "published"); err != nil {
+		t.Fatalf("publish v1 fixture: %v", err)
+	}
 
 	// 2) 建 Agent —— 此刻快照必须 pin 死 v1 的【版本 ID】。
 	ag, err := agentSvc.CreateAgent(ctx, agent.CreateAgentRequest{
-		WorkspaceID:    "w1",
-		Name:           "bot",
-		SystemPromptID: systemPromptID,
-		ToolIDs:        []string{tl.ID}, // 传的是工具注册 ID;pin 在 CreateAgent 内部完成
-		CreatedBy:      "u1",
+		WorkspaceID: "w1", Name: "bot",
+		SystemPromptVersionID: systemPromptVersionID, ModelConfigVersionID: testModelConfigVersionID,
+		ToolVersionIDs: []string{v1.ID}, CreatedBy: "u1",
 	})
 	if err != nil {
 		t.Fatalf("CreateAgent: %v", err)
@@ -68,7 +69,7 @@ func TestSnapshotPinsToolVersion(t *testing.T) {
 		ID:             util.GenerateID(),
 		ToolID:         tl.ID,
 		Version:        2,
-		Status:         "published",
+		Status:         "draft",
 		EndpointConfig: `{"url":"https://api.example.com/v2"}`,
 		SchemaJSON:     `{"type":"object","properties":{"query":{"type":"string"}}}`,
 		CreatedBy:      "u1",
@@ -76,8 +77,31 @@ func TestSnapshotPinsToolVersion(t *testing.T) {
 	if err := toolStore.CreateToolVersion(ctx, v2); err != nil {
 		t.Fatalf("create v2: %v", err)
 	}
+	if _, err := agentSvc.CreateAgentVersion(ctx, ag.ID, "w1", agent.AgentVersionConfig{
+		SystemPromptVersionID: systemPromptVersionID,
+		ModelConfigVersionID:  testModelConfigVersionID,
+		ToolVersionIDs:        []string{v2.ID},
+	}, "u1"); err == nil {
+		t.Fatal("draft tool version must not be attached to an AgentVersion")
+	}
+	if err := toolStore.UpdateToolVersionStatus(ctx, v2.ID, "published"); err != nil {
+		t.Fatalf("publish v2 fixture: %v", err)
+	}
 	if cur, _ := toolStore.GetToolCurrentVersion(ctx, tl.ID); cur.ID != v2.ID {
 		t.Fatalf("precondition failed: current should be v2, got %s", cur.ID)
+	}
+
+	// 复制旧 AgentVersion 的精确配置不会因为 v2 已发布而隐式升级工具。
+	views, err := agentSvc.ListAgentVersions(ctx, ag.ID, "w1")
+	if err != nil || len(views) != 1 {
+		t.Fatalf("list agent versions: %+v err=%v", views, err)
+	}
+	copied, err := agentSvc.CreateAgentVersion(ctx, ag.ID, "w1", views[0].Config, "u1")
+	if err != nil {
+		t.Fatalf("copy agent version: %v", err)
+	}
+	if len(copied.Config.ToolVersionIDs) != 1 || copied.Config.ToolVersionIDs[0] != v1.ID {
+		t.Fatalf("copied AgentVersion upgraded tool unexpectedly: %+v", copied.Config.ToolVersionIDs)
 	}
 
 	// 4) 解析老 Agent 的快照 —— 必须仍指向 v1,而非漂移到 v2。

@@ -54,20 +54,18 @@ type Prompt struct {
 
 // PromptVersion 提示词版本实体（immutable）
 type PromptVersion struct {
-	ID                   string           `json:"id"`
-	PromptID             string           `json:"prompt_id"`
-	Version              int              `json:"version"`
-	Template             string           `json:"template"`
-	VariablesSchema      string           `json:"variables_schema"` // JSON Schema
-	ModelConfigVersionID string           `json:"model_config_version_id,omitempty"`
-	GenerationConfig     GenerationConfig `json:"generation_config"`
-	Hash                 string           `json:"hash"`
-	TokenEstimate        int              `json:"token_estimate"` // 保存时估算并持久化
-	CreatedBy            string           `json:"created_by"`
-	CreatedAt            time.Time        `json:"created_at"`
+	ID              string    `json:"id"`
+	PromptID        string    `json:"prompt_id"`
+	Version         int       `json:"version"`
+	Template        string    `json:"template"`
+	VariablesSchema string    `json:"variables_schema"` // JSON Schema
+	Hash            string    `json:"hash"`
+	TokenEstimate   int       `json:"token_estimate"` // 保存时估算并持久化
+	CreatedBy       string    `json:"created_by"`
+	CreatedAt       time.Time `json:"created_at"`
 }
 
-// GenerationConfig 与 Prompt 一起版本化的模型生成参数。
+// GenerationConfig 由 AgentVersion 固化，描述该 Agent 如何调用模型。
 // 指针用于区分“未设置”与显式零值。
 type GenerationConfig struct {
 	Temperature     *float32 `json:"temperature,omitempty"`
@@ -116,18 +114,14 @@ type Conversation struct {
 	UpdatedAt         time.Time `json:"updated_at"`
 }
 
-// ConversationRuntimeConfig 是创建会话时解析并固化的 Prompt/模型配置。
-// 它不包含 API Key；密钥在 LLM Gateway 调用时由模型控制面解析。
+// ConversationRuntimeConfig 只保存会话自身的来源、观测和首轮输入快照。
+// Prompt、模型与生成参数的唯一真相源是 Conversation 固定的 AgentVersion。
 type ConversationRuntimeConfig struct {
-	Environment          string           `json:"environment,omitempty"`
-	LatestTraceID        string           `json:"latest_trace_id,omitempty"`
-	SystemPrompt         string           `json:"system_prompt,omitempty"`
-	PromptVersionID      string           `json:"prompt_version_id,omitempty"`
-	ModelConfigVersionID string           `json:"model_config_version_id,omitempty"`
-	GenerationConfig     GenerationConfig `json:"generation_config"`
-	UserPromptVersionID  string           `json:"user_prompt_version_id,omitempty"`
-	UserPromptVariables  map[string]any   `json:"user_prompt_variables,omitempty"`
-	RenderedUserPrompt   string           `json:"rendered_user_prompt,omitempty"`
+	Environment         string         `json:"environment,omitempty"`
+	LatestTraceID       string         `json:"latest_trace_id,omitempty"`
+	UserPromptVersionID string         `json:"user_prompt_version_id,omitempty"`
+	UserPromptVariables map[string]any `json:"user_prompt_variables,omitempty"`
+	RenderedUserPrompt  string         `json:"rendered_user_prompt,omitempty"`
 }
 
 // Message 消息实体

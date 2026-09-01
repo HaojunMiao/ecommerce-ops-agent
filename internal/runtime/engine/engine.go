@@ -276,9 +276,6 @@ func (e *Engine) ChatStream(ctx context.Context, req ChatStreamRequest) (<-chan 
 	if req.WorkspaceID != "" && snapshot.WorkspaceID != req.WorkspaceID {
 		return nil, fmt.Errorf("agent not found")
 	}
-	if err := applyConversationRuntimeConfig(snapshot, conv.RuntimeConfigJSON); err != nil {
-		return nil, err
-	}
 	turns, _ := e.platform.(conversationTurnCoordinator)
 	turnToken := ""
 	if turns != nil {
@@ -522,23 +519,6 @@ func conversationEnvironment(conversation *domain.Conversation) string {
 		}
 	}
 	return "dev"
-}
-
-func applyConversationRuntimeConfig(snapshot *AgentSnapshot, raw string) error {
-	if raw == "" {
-		return nil
-	}
-	var runtimeConfig domain.ConversationRuntimeConfig
-	if err := json.Unmarshal([]byte(raw), &runtimeConfig); err != nil {
-		return fmt.Errorf("decode conversation runtime config: %w", err)
-	}
-	if runtimeConfig.SystemPrompt != "" {
-		snapshot.SystemPrompt = runtimeConfig.SystemPrompt
-	}
-	snapshot.PromptVersionID = runtimeConfig.PromptVersionID
-	snapshot.ModelConfigVersionID = runtimeConfig.ModelConfigVersionID
-	snapshot.GenerationConfig = runtimeConfig.GenerationConfig
-	return nil
 }
 
 // emitter 把 Agent 事件写进 channel,但 select 上 ctx.Done() 兜底:

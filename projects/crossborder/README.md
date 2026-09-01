@@ -26,7 +26,7 @@ make crossborder-install-isolated
 make crossborder-e2e-isolated
 ```
 
-`crossborder-install-isolated` 幂等创建 Workspace、知识库、工具、技能、绑定模型配置版本的 System Prompt，以及引用该 Prompt 固定版本的单一电商运营 Agent。若 Workspace 中尚无默认模型配置，安装脚本会明确失败并提示先执行 `make crossborder-bootstrap-model-config`。
+`crossborder-install-isolated` 幂等创建 Workspace、知识库、工具、技能和 System PromptVersion，并创建直接固定该 PromptVersion、ModelConfigVersion 与生成参数的单一电商运营 Agent。若 Workspace 中尚无默认模型配置，安装脚本会明确失败并提示先执行 `make crossborder-bootstrap-model-config`。
 
 `crossborder-e2e-isolated` 验证订单诊断、敏感库存调拨、固定审批卡片、断点恢复和审计链；它会向 `.env` 配置的外部模型发送演示订单指令，请仅在已授权的模型端点上执行。
 

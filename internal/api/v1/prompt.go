@@ -4,7 +4,6 @@ import (
 	"net/http"
 
 	"github.com/HaojunMiao/ecommerce-ops-agent/internal/api/middleware"
-	"github.com/HaojunMiao/ecommerce-ops-agent/internal/domain"
 	"github.com/HaojunMiao/ecommerce-ops-agent/internal/platform/prompt"
 	"github.com/go-chi/chi/v5"
 )
@@ -19,7 +18,7 @@ func NewPromptHandler(svc *prompt.Service) *PromptHandler {
 	return &PromptHandler{svc: svc}
 }
 
-// CreatePrompt 创建 Prompt（含 v1，默认绑定 dev）
+// CreatePrompt 创建 Prompt（含不可变 v1）。
 // @Summary  创建 Prompt(含 v1)
 // @Tags     prompts
 // @Security BearerAuth
@@ -55,70 +54,19 @@ func (h *PromptHandler) CreateVersion(w http.ResponseWriter, r *http.Request) {
 	userID := middleware.GetUserIDFromContext(r.Context())
 
 	var body struct {
-		Template             string                  `json:"template"`
-		VariablesSchema      string                  `json:"variables_schema"`
-		ModelConfigVersionID string                  `json:"model_config_version_id"`
-		GenerationConfig     domain.GenerationConfig `json:"generation_config"`
+		Template        string `json:"template"`
+		VariablesSchema string `json:"variables_schema"`
 	}
 	if err := decodeJSON(w, r, &body); err != nil {
 		http.Error(w, "invalid request body", http.StatusBadRequest)
 		return
 	}
-	v, err := h.svc.CreateVersionConfigured(r.Context(), promptID, body.Template, body.VariablesSchema,
-		body.ModelConfigVersionID, body.GenerationConfig, userID)
+	v, err := h.svc.CreateVersion(r.Context(), promptID, body.Template, body.VariablesSchema, userID)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 	writeJSON(w, http.StatusCreated, v)
-}
-
-// Promote dev→staging→prod 晋升 / 首次发布（改 env 指针）
-// @Summary  晋升 Prompt 版本到某环境
-// @Tags     prompts
-// @Security BearerAuth
-// @Param    prompt_id  path      string  true  "Prompt ID"
-// @Success  200        {object}  map[string]string
-// @Router   /prompts/{prompt_id}/promote [post]
-func (h *PromptHandler) Promote(w http.ResponseWriter, r *http.Request) {
-	promptID := chi.URLParam(r, "prompt_id")
-	if !h.ensurePromptWorkspace(w, r, promptID) {
-		return
-	}
-	var body struct {
-		Env       string `json:"env"`
-		VersionID string `json:"version_id"`
-	}
-	if err := decodeJSON(w, r, &body); err != nil {
-		http.Error(w, "invalid request body", http.StatusBadRequest)
-		return
-	}
-	if err := h.svc.Promote(r.Context(), promptID, body.Env, body.VersionID); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]string{"status": "promoted"})
-}
-
-// Rollback 回滚 env 指针
-func (h *PromptHandler) Rollback(w http.ResponseWriter, r *http.Request) {
-	promptID := chi.URLParam(r, "prompt_id")
-	if !h.ensurePromptWorkspace(w, r, promptID) {
-		return
-	}
-	var body struct {
-		Env       string `json:"env"`
-		VersionID string `json:"version_id"`
-	}
-	if err := decodeJSON(w, r, &body); err != nil {
-		http.Error(w, "invalid request body", http.StatusBadRequest)
-		return
-	}
-	if err := h.svc.Rollback(r.Context(), promptID, body.Env, body.VersionID); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]string{"status": "rolled_back"})
 }
 
 // Diff 语义级 diff（from→to）
@@ -145,25 +93,26 @@ func (h *PromptHandler) Diff(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"diff": diff})
 }
 
-// Render 按环境绑定的固定版本渲染。
+// Render 按明确的不可变版本渲染。
 func (h *PromptHandler) Render(w http.ResponseWriter, r *http.Request) {
 	promptID := chi.URLParam(r, "prompt_id")
 	if !h.ensurePromptWorkspace(w, r, promptID) {
 		return
 	}
-	userID := middleware.GetUserIDFromContext(r.Context())
 	var body struct {
-		Env  string         `json:"env"`
-		Vars map[string]any `json:"vars"`
+		VersionID string         `json:"version_id"`
+		Vars      map[string]any `json:"vars"`
 	}
 	if err := decodeJSON(w, r, &body); err != nil {
 		http.Error(w, "invalid request body", http.StatusBadRequest)
 		return
 	}
-	if body.Env == "" {
-		body.Env = prompt.EnvDev
+	version, err := h.svc.GetVersion(r.Context(), body.VersionID)
+	if err != nil || version.PromptID != promptID {
+		http.Error(w, "prompt version not found", http.StatusNotFound)
+		return
 	}
-	text, err := h.svc.Render(r.Context(), promptID, body.Env, userID, body.Vars)
+	text, err := h.svc.RenderByVersion(r.Context(), body.VersionID, body.Vars)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return

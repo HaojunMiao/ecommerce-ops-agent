@@ -15,7 +15,7 @@ export function ModelsPage() {
         type="info"
         showIcon
         style={{ marginBottom: 16 }}
-        message="API Key 由环境变量注入；地址、模型、超时和重试策略固化为不可变版本，Prompt/Agent 快照引用具体版本。"
+        message="API Key 由环境变量注入；地址、模型、超时和重试策略固化为不可变版本，AgentVersion 快照直接引用具体版本。"
       />
       <Table<ModelConfigVersion>
         rowKey="id"

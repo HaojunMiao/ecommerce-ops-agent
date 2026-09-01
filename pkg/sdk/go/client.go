@@ -62,14 +62,20 @@ func (c *Client) Login(ctx context.Context, email, password string) error {
 
 // CreateAgentRequest 创建 Agent 的请求体。
 type CreateAgentRequest struct {
-	Name           string   `json:"name"`
-	Template       string   `json:"template,omitempty"`
-	SystemPrompt   string   `json:"system_prompt,omitempty"`
-	SystemPromptID string   `json:"system_prompt_id,omitempty"`
-	UserPromptID   string   `json:"user_prompt_id,omitempty"`
-	PromptEnv      string   `json:"prompt_env,omitempty"`
-	ToolIDs        []string `json:"tool_ids,omitempty"`
-	SkillIDs       []string `json:"skill_version_ids,omitempty"`
+	Name                  string           `json:"name"`
+	Template              string           `json:"template,omitempty"`
+	SystemPromptVersionID string           `json:"system_prompt_version_id"`
+	UserPromptVersionID   string           `json:"user_prompt_version_id,omitempty"`
+	ModelConfigVersionID  string           `json:"model_config_version_id"`
+	GenerationConfig      GenerationConfig `json:"generation_config,omitempty"`
+	ToolVersionIDs        []string         `json:"tool_version_ids,omitempty"`
+	SkillIDs              []string         `json:"skill_version_ids,omitempty"`
+}
+
+type GenerationConfig struct {
+	Temperature     *float32 `json:"temperature,omitempty"`
+	TopP            *float32 `json:"top_p,omitempty"`
+	MaxOutputTokens *int     `json:"max_output_tokens,omitempty"`
 }
 
 // Agent 是创建返回的 Agent。
@@ -92,7 +98,6 @@ type UserPromptInputSpec struct {
 	Enabled         bool   `json:"enabled"`
 	PromptID        string `json:"prompt_id,omitempty"`
 	PromptName      string `json:"prompt_name,omitempty"`
-	PromptEnv       string `json:"prompt_env,omitempty"`
 	PromptVersionID string `json:"prompt_version_id,omitempty"`
 	PromptVersion   int    `json:"prompt_version,omitempty"`
 	VariablesSchema string `json:"variables_schema,omitempty"`

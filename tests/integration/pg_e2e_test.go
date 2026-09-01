@@ -44,9 +44,14 @@ func publishToolAgent(t *testing.T, ctx context.Context, plat *platform.Service,
 	if err := plat.Tool.PublishTool(ctx, tl.ID); err != nil {
 		t.Fatalf("publish tool: %v", err)
 	}
+	toolVersion, err := plat.Tool.GetToolCurrentVersion(ctx, tl.ID)
+	if err != nil {
+		t.Fatalf("get published tool version: %v", err)
+	}
 	ag, err := plat.Agent.CreateAgent(ctx, agent.CreateAgentRequest{
-		WorkspaceID: ws, Name: toolName + "_bot", SystemPromptID: createTestSystemPrompt(t, ctx, plat, ws),
-		ToolIDs: []string{tl.ID}, CreatedBy: "u1",
+		WorkspaceID: ws, Name: toolName + "_bot", SystemPromptVersionID: createTestSystemPrompt(t, ctx, plat, ws),
+		ModelConfigVersionID: ensureTestModelConfig(t, ctx, plat, ws),
+		ToolVersionIDs:       []string{toolVersion.ID}, CreatedBy: "u1",
 	})
 	if err != nil {
 		t.Fatalf("create agent: %v", err)
@@ -135,18 +140,17 @@ func TestKBIngestE2E_PG(t *testing.T) {
 	}
 }
 
-// 3) Prompt Promote E2E:建 prompt v1 → 新增 v2 → 晋升 v2 到 prod(经真 Redis Pub/Sub 广播失效)→
-// Render(prod) 解析到 v2。
-func TestPromptPromoteE2E_PG(t *testing.T) {
+// 3) Prompt 版本 E2E：不同不可变版本可独立渲染。
+func TestPromptVersionRenderE2E_PG(t *testing.T) {
 	pool := StartPostgres(t)
 	rds := StartRedis(t)
 	plat := newPGPlatform(t, pool, rds)
 	ctx := context.Background()
 
 	ws := newWorkspace(t, ctx, plat, "prompt-ws")
-	p, _, err := plat.Prompt.CreatePrompt(ctx, prompt.CreatePromptRequest{
+	p, v1, err := plat.Prompt.CreatePrompt(ctx, prompt.CreatePromptRequest{
 		WorkspaceID: ws, Name: "sys", Template: "v1: 你是助手",
-		ModelConfigVersionID: ensureTestModelConfig(t, ctx, plat, ws), CreatedBy: "u1",
+		CreatedBy: "u1",
 	})
 	if err != nil {
 		t.Fatalf("create prompt: %v", err)
@@ -155,16 +159,15 @@ func TestPromptPromoteE2E_PG(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create version: %v", err)
 	}
-	// 晋升 v2 到 prod(publisher.Publish 走真 Redis,无订阅者也不报错)。
-	if err := plat.Prompt.Promote(ctx, p.ID, prompt.EnvProd, v2.ID); err != nil {
-		t.Fatalf("promote: %v", err)
-	}
-	got, err := plat.Prompt.Render(ctx, p.ID, prompt.EnvProd, "u1", nil)
+	got, err := plat.Prompt.RenderByVersion(ctx, v2.ID, nil)
 	if err != nil {
-		t.Fatalf("render prod: %v", err)
+		t.Fatalf("render v2: %v", err)
 	}
 	if !strings.Contains(got, "资深客服") {
-		t.Fatalf("prod 应解析到 v2,got %q", got)
+		t.Fatalf("v2 应独立渲染,got %q", got)
+	}
+	if got, _ := plat.Prompt.RenderByVersion(ctx, v1.ID, nil); !strings.Contains(got, "你是助手") {
+		t.Fatalf("v1 不应被 v2 影响,got %q", got)
 	}
 }
 
@@ -176,7 +179,8 @@ func TestGuardBlockE2E_PG(t *testing.T) {
 
 	ws := newWorkspace(t, ctx, plat, "guard-ws")
 	ag, err := plat.Agent.CreateAgent(ctx, agent.CreateAgentRequest{
-		WorkspaceID: ws, Name: "guard_bot", SystemPromptID: createTestSystemPrompt(t, ctx, plat, ws), CreatedBy: "u1",
+		WorkspaceID: ws, Name: "guard_bot", SystemPromptVersionID: createTestSystemPrompt(t, ctx, plat, ws),
+		ModelConfigVersionID: ensureTestModelConfig(t, ctx, plat, ws), CreatedBy: "u1",
 	})
 	if err != nil {
 		t.Fatalf("create agent: %v", err)

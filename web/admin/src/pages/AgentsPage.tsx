@@ -86,8 +86,8 @@ export function AgentsPage() {
           form={form}
           layout="vertical"
           initialValues={{
-            template: 'customer_support', max_steps: 8, prompt_env: 'dev',
-            tool_ids: [], skill_version_ids: [], kb_ids: [], allow_network: false,
+            template: 'customer_support', max_steps: 8, generation_config: {},
+            tool_version_ids: [], skill_version_ids: [], kb_ids: [], allow_network: false,
           }}
           onFinish={(v) => create.mutate(v)}
         >

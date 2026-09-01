@@ -320,7 +320,7 @@ func (s *PostgresStore) ReleaseConversationTurn(ctx context.Context, conversatio
 	return nil
 }
 
-// UpdateConversationRuntimeConfig 幂等更新会话运行时 Prompt 快照。
+// UpdateConversationRuntimeConfig 幂等更新会话自身的观测与首轮输入快照。
 func (s *PostgresStore) UpdateConversationRuntimeConfig(ctx context.Context, conversationID, configJSON string) error {
 	id, err := uuid.Parse(conversationID)
 	if err != nil {

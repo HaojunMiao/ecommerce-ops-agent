@@ -9,7 +9,7 @@
                                   └──敏感写操作──> 人工审批与断点恢复
 ```
 
-控制面保存提示词、工具、技能、知识库、Agent 和模型配置的不可变版本。模型控制面只有 `ModelConfigVersion` 一层：地址、模型名、超时、重试与价格进入版本，API Key 只保存环境变量引用、不写数据库。部署配置变化时追加新版本，Prompt/Agent 快照引用具体版本；已有会话因此不会随新版本发布而漂移。运行时从 PostgreSQL 回填历史消息，执行模型推理、知识检索和工具调用，并通过 SSE 返回文本、工具调用及审批事件。
+控制面保存提示词、工具、技能、知识库、Agent 和模型配置的不可变版本。模型控制面只有 `ModelConfigVersion` 一层：地址、模型名、超时、重试与价格进入版本，API Key 只保存环境变量引用、不写数据库。`PromptVersion` 只管理模板与变量契约；`AgentVersion` 作为唯一部署聚合快照，直接固定 System/User PromptVersion、ModelConfigVersion、生成参数以及明确的 Tool/Skill 版本。只有 Agent 保留 dev/staging/prod 环境指针；Conversation 只固定 `agent_version_id` 并保存会话自身状态，不再复制或覆盖模型配置。已有会话不会随新版本发布而漂移。运行时从 PostgreSQL 回填历史消息，执行模型推理、知识检索和工具调用，并通过 SSE 返回文本、工具调用及审批事件。
 
 安全边界由代码固定：提示词注入检测、隐私信息脱敏、请求限流、工具白名单、REST 出网白名单、敏感工具审批和业务接口幂等。审批记录、工具调用和会话轨迹持久化，批准后由异步 Worker 从检查点恢复。
 

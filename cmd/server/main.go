@@ -23,7 +23,6 @@ import (
 	"github.com/HaojunMiao/ecommerce-ops-agent/internal/runtime/cache"
 	"github.com/HaojunMiao/ecommerce-ops-agent/internal/runtime/engine"
 	"github.com/HaojunMiao/ecommerce-ops-agent/internal/runtime/llm"
-	"github.com/HaojunMiao/ecommerce-ops-agent/internal/runtime/promptcache"
 	"github.com/HaojunMiao/ecommerce-ops-agent/internal/runtime/retriever"
 )
 
@@ -64,9 +63,8 @@ func main() {
 	jobsClient := jobs.NewClient(rds)
 	defer jobsClient.Close()
 
-	// 平台服务装配（Prompt 中心用 Redis Pub/Sub 广播失效）
+	// 平台服务装配。
 	log.Println("Initializing platform services...")
-	publisher := redisinfra.NewPublisher(rds)
 	// Embedding 使用独立出口，避免与聊天模型供应商和密钥耦合。
 	embedder, err := retriever.NewEmbedder(cfg.EmbedderKind, cfg.EmbedderDim, cfg.EmbedderBaseURL, cfg.EmbedderAPIKey, cfg.EmbedderModel)
 	must(err)
@@ -80,7 +78,7 @@ func main() {
 	}
 	// jobsClient 作为 KB ingest 的异步投递器:SyncMarkdownFolder → 入队 → worker 落 kb_chunks。
 	platformService := platform.NewServiceWithReranker(
-		db, rds, cfg.JWTKeyBytes(), publisher, embedder, jobsClient,
+		db, rds, cfg.JWTKeyBytes(), embedder, jobsClient,
 		reranker, cfg.RerankerCandidateK, []byte(cfg.CredentialEncryptionKey),
 	)
 	endpointPolicy := tool.NewEndpointPolicy(cfg.ToolAllowedHosts, cfg.ToolAllowPrivateNetwork)
@@ -115,14 +113,6 @@ func main() {
 			}
 		}
 	}
-
-	// 启动 Prompt 缓存订阅器：收到失效通知后异步重拉编译产物（Apollo 风格推送）
-	promptSub := promptcache.NewSubscriber(rds, platformService.Prompt.RefreshCache)
-	go func() {
-		if err := promptSub.Run(ctx); err != nil && ctx.Err() == nil {
-			log.Printf("prompt subscriber stopped: %v", err)
-		}
-	}()
 
 	// Runtime装配
 	log.Println("Initializing runtime...")

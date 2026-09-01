@@ -19,9 +19,7 @@ import (
 	"github.com/redis/go-redis/v9"
 
 	"github.com/HaojunMiao/ecommerce-ops-agent/internal/infrastructure/postgres/testpg"
-	redisinfra "github.com/HaojunMiao/ecommerce-ops-agent/internal/infrastructure/redis"
 	"github.com/HaojunMiao/ecommerce-ops-agent/internal/platform"
-	"github.com/HaojunMiao/ecommerce-ops-agent/internal/platform/prompt"
 	"github.com/HaojunMiao/ecommerce-ops-agent/internal/runtime/retriever"
 )
 
@@ -79,14 +77,10 @@ func StartRedis(t *testing.T) *redis.Client {
 }
 
 // newPGPlatform 用真 PG(+可选 Redis)装配 platform.Service。
-// rds 非空时 Prompt 失效广播走真 Redis Pub/Sub;embedder 固定 2048 维以匹配 kb_chunks.embedding。
+// embedder 固定 2048 维以匹配 kb_chunks.embedding。
 func newPGPlatform(t *testing.T, pool *pgxpool.Pool, rds *redis.Client) *platform.Service {
 	t.Helper()
-	var pub prompt.Publisher = prompt.NoopPublisher{}
-	if rds != nil {
-		pub = redisinfra.NewPublisher(rds)
-	}
-	service := platform.NewService(pool, rds, make([]byte, 32), pub, retriever.NewLocalEmbedder(2048), nil)
+	service := platform.NewService(pool, rds, make([]byte, 32), retriever.NewLocalEmbedder(2048), nil)
 	// Audit Writer 必须在数据库连接池回收前排空，避免测试和优雅退出窗口丢最后一批日志。
 	t.Cleanup(service.Audit.Close)
 	return service

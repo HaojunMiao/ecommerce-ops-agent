@@ -419,18 +419,12 @@ func (s *Service) GetToolConfig(ctx context.Context, toolID string) (*ToolConfig
 	return cfg, nil
 }
 
-// GetToolCurrentVersionID 返回工具当前版本的 ID。
-//
-// Agent 快照在【创建那一刻】用它把"工具注册 ID"解析成"当前版本 ID"写死,
-// 从此该快照执行的就是这个具体版本——之后给工具发新版本不影响老快照。
+// GetToolCurrentVersionID 返回最新已发布工具版本的 ID。
+// 不允许回退到 draft，避免绕过工具试调与发布门禁。
 func (s *Service) GetToolCurrentVersionID(ctx context.Context, toolID string) (string, error) {
 	v, err := s.store.GetToolLatestPublishedVersion(ctx, toolID)
 	if err != nil {
-		// 兼容尚未发布的早期资源与纯内存测试。
-		v, err = s.store.GetToolCurrentVersion(ctx, toolID)
-	}
-	if err != nil {
-		return "", fmt.Errorf("get tool current version: %w", err)
+		return "", fmt.Errorf("get latest published tool version: %w", err)
 	}
 	return v.ID, nil
 }
@@ -444,13 +438,25 @@ func (s *Service) GetToolCurrentVersion(ctx context.Context, toolID string) (*do
 	return v, nil
 }
 
-// GetToolIDByVersion 把已固化的工具版本反解为注册 ID，供控制面编辑旧 Agent 版本。
-func (s *Service) GetToolIDByVersion(ctx context.Context, versionID string) (string, error) {
-	v, err := s.store.GetToolVersion(ctx, versionID)
+// ValidateVersion 校验不可变工具版本的工作空间归属和发布状态，并返回注册 ID。
+func (s *Service) ValidateVersion(
+	ctx context.Context, versionID, workspaceID string, requirePublished bool,
+) (string, error) {
+	version, err := s.store.GetToolVersion(ctx, versionID)
 	if err != nil {
 		return "", fmt.Errorf("get tool version: %w", err)
 	}
-	return v.ToolID, nil
+	tool, err := s.store.GetTool(ctx, version.ToolID)
+	if err != nil {
+		return "", fmt.Errorf("get tool: %w", err)
+	}
+	if workspaceID == "" || tool.WorkspaceID != workspaceID {
+		return "", fmt.Errorf("tool version does not belong to current workspace")
+	}
+	if requirePublished && version.Status != "published" {
+		return "", fmt.Errorf("tool version must be published")
+	}
+	return tool.ID, nil
 }
 
 // GetToolConfigByVersion 取【指定版本】的工具配置(用于按 pinned 快照执行,绝不回退到 current)。

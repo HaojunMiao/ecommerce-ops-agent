@@ -15,43 +15,61 @@ import (
 
 func TestAgentSeparatesSystemAndUserPromptBindings(t *testing.T) {
 	ctx := context.Background()
-	promptService := prompt.NewService(platform.NewMemoryPromptStore(), promptcache.NewCache(), prompt.NoopPublisher{})
-	systemPrompt, _, err := promptService.CreatePrompt(ctx, prompt.CreatePromptRequest{
+	promptService := prompt.NewService(platform.NewMemoryPromptStore(), promptcache.NewCache())
+	_, systemVersion, err := promptService.CreatePrompt(ctx, prompt.CreatePromptRequest{
 		WorkspaceID: "w1", Name: "商品运营 System", Category: "product-system",
 		Template: "你是商品运营 Agent。", VariablesSchema: `{"type":"object","additionalProperties":false}`,
-		ModelConfigVersionID: "model-config-v1", CreatedBy: "u1",
+		CreatedBy: "u1",
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	userPrompt, userVersion, err := promptService.CreatePrompt(ctx, prompt.CreatePromptRequest{
 		WorkspaceID: "w1", Name: "商品运营 User Template", Category: "product-user-template",
-		Template:             "处理订单 {{.order_id}}，目标：{{.objective}}。",
-		VariablesSchema:      `{"type":"object","required":["order_id","objective"],"properties":{"order_id":{"type":"string"},"objective":{"type":"string"}},"additionalProperties":false}`,
-		ModelConfigVersionID: "model-config-v1", CreatedBy: "u1",
+		Template:        "处理订单 {{.order_id}}，目标：{{.objective}}。",
+		VariablesSchema: `{"type":"object","required":["order_id","objective"],"properties":{"order_id":{"type":"string"},"objective":{"type":"string"}},"additionalProperties":false}`,
+		CreatedBy:       "u1",
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	service := agent.NewService(platform.NewMemoryAgentStore(), promptService, nil, nil)
+	service := agent.NewService(platform.NewMemoryAgentStore(), promptService, nil, nil).WithModelConfigs(testModelValidator{})
 
 	_, err = service.CreateAgent(ctx, agent.CreateAgentRequest{
-		WorkspaceID: "w1", Name: "invalid-sources", Template: "custom",
-		SystemPrompt: "literal", SystemPromptID: systemPrompt.ID, CreatedBy: "u1",
+		WorkspaceID: "w1", Name: "missing-system", Template: "custom",
+		ModelConfigVersionID: testModelConfigVersionID, CreatedBy: "u1",
 	})
-	if err == nil || !strings.Contains(err.Error(), "literal system_prompt is not supported") {
-		t.Fatalf("expected mutually exclusive system prompt validation, got %v", err)
+	if err == nil || !strings.Contains(err.Error(), "system_prompt_version_id is required") {
+		t.Fatalf("expected system prompt version validation, got %v", err)
 	}
 	_, err = service.CreateAgent(ctx, agent.CreateAgentRequest{
 		WorkspaceID: "w1", Name: "invalid-system", Template: "custom",
-		SystemPromptID: userPrompt.ID, CreatedBy: "u1",
+		SystemPromptVersionID: userVersion.ID, ModelConfigVersionID: testModelConfigVersionID, CreatedBy: "u1",
 	})
 	if err == nil || !strings.Contains(err.Error(), "cannot reference a user prompt template") {
 		t.Fatalf("expected system prompt role validation, got %v", err)
 	}
+	_, variableSystemVersion, err := promptService.CreatePrompt(ctx, prompt.CreatePromptRequest{
+		WorkspaceID: "w1", Name: "需要变量的 System", Category: "product-system",
+		Template:        "你负责 {{.region}} 区域。",
+		VariablesSchema: `{"type":"object","required":["region"],"properties":{"region":{"type":"string"}}}`,
+		CreatedBy:       "u1",
+	})
+	if err != nil {
+		t.Fatalf("create variable system prompt fixture: %v", err)
+	}
+	_, err = service.CreateAgent(ctx, agent.CreateAgentRequest{
+		WorkspaceID: "w1", Name: "variable-system", Template: "custom",
+		SystemPromptVersionID: variableSystemVersion.ID,
+		ModelConfigVersionID:  testModelConfigVersionID, CreatedBy: "u1",
+	})
+	if err == nil || !strings.Contains(err.Error(), "system prompt must render without variables") {
+		t.Fatalf("expected variable system prompt validation, got %v", err)
+	}
 	_, err = service.CreateAgent(ctx, agent.CreateAgentRequest{
 		WorkspaceID: "w1", Name: "invalid-user", Template: "custom",
-		SystemPromptID: systemPrompt.ID, UserPromptID: systemPrompt.ID, CreatedBy: "u1",
+		SystemPromptVersionID: systemVersion.ID, UserPromptVersionID: systemVersion.ID,
+		ModelConfigVersionID: testModelConfigVersionID, CreatedBy: "u1",
 	})
 	if err == nil || !strings.Contains(err.Error(), "must reference a user prompt template") {
 		t.Fatalf("expected user prompt role validation, got %v", err)
@@ -59,17 +77,22 @@ func TestAgentSeparatesSystemAndUserPromptBindings(t *testing.T) {
 
 	created, err := service.CreateAgent(ctx, agent.CreateAgentRequest{
 		WorkspaceID: "w1", Name: "product-agent", Template: "custom",
-		SystemPromptID: systemPrompt.ID, UserPromptID: userPrompt.ID,
-		PromptEnv: prompt.EnvDev, CreatedBy: "u1",
+		SystemPromptVersionID: systemVersion.ID, UserPromptVersionID: userVersion.ID,
+		ModelConfigVersionID: testModelConfigVersionID, CreatedBy: "u1",
 	})
 	if err != nil {
 		t.Fatalf("create agent: %v", err)
 	}
-	spec, err := service.GetUserPromptInputSpec(ctx, created.ID, "w1", prompt.EnvDev, "u1")
+	// AgentVersion 已固定 userVersion；模板随后新增版本不能让现有 AgentVersion 漂移。
+	if _, err := promptService.CreateVersion(ctx, userPrompt.ID,
+		"新版模板 {{.order_id}}：{{.objective}}。", userVersion.VariablesSchema, "u2"); err != nil {
+		t.Fatalf("create newer user prompt version: %v", err)
+	}
+	spec, err := service.GetUserPromptInputSpec(ctx, created.ID, "w1", "dev", "u1")
 	if err != nil {
 		t.Fatalf("get user prompt input spec: %v", err)
 	}
-	if !spec.Enabled || spec.PromptID != userPrompt.ID || spec.PromptVersionID != userVersion.ID || !strings.Contains(spec.VariablesSchema, "order_id") {
+	if !spec.Enabled || spec.PromptVersionID != userVersion.ID || !strings.Contains(spec.VariablesSchema, "order_id") {
 		t.Fatalf("input spec = %+v", spec)
 	}
 

@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"github.com/HaojunMiao/ecommerce-ops-agent/internal/domain"
-	"github.com/HaojunMiao/ecommerce-ops-agent/internal/platform/prompt"
 	"github.com/HaojunMiao/ecommerce-ops-agent/internal/platform/skill"
 	"github.com/HaojunMiao/ecommerce-ops-agent/internal/runtime/engine"
 	"github.com/HaojunMiao/ecommerce-ops-agent/internal/runtime/skillrunner"
@@ -20,6 +19,7 @@ import (
 type Service struct {
 	store  Store
 	prompt PromptResolver
+	models ModelConfigValidator
 	skills SkillResolver
 	tools  ToolResolver
 	kbs    KBResolver
@@ -59,9 +59,10 @@ type PromptResolver interface {
 	RenderByVersion(ctx context.Context, versionID string, vars map[string]any) (string, error)
 	GetPrompt(ctx context.Context, promptID string) (*domain.Prompt, error)
 	GetVersion(ctx context.Context, versionID string) (*domain.PromptVersion, error)
-	ResolveVersion(ctx context.Context, promptID, env, userID string) (string, error)
-	ResolveConfig(ctx context.Context, promptID, env, userID string, vars map[string]any) (*prompt.ResolvedConfig, error)
-	ResolveConfigByVersion(ctx context.Context, versionID string, vars map[string]any) (*prompt.ResolvedConfig, error)
+}
+
+type ModelConfigValidator interface {
+	ValidateConfigVersion(ctx context.Context, workspaceID, versionID string) error
 }
 
 // SkillResolver 把 Skill 版本解析为 Runtime Spec。
@@ -69,10 +70,9 @@ type SkillResolver interface {
 	GetSpec(ctx context.Context, versionID string) (*skill.Spec, error)
 }
 
-// ToolResolver 在建快照那一刻把"工具注册 ID"解析成"当前版本 ID"以 pin 死版本。
+// ToolResolver 校验 AgentVersion 显式选择的不可变工具版本。
 type ToolResolver interface {
-	GetToolCurrentVersionID(ctx context.Context, toolID string) (string, error)
-	GetToolIDByVersion(ctx context.Context, versionID string) (string, error)
+	ValidateVersion(ctx context.Context, versionID, workspaceID string, requirePublished bool) (string, error)
 	GetToolMeta(ctx context.Context, toolID string) (*domain.Tool, error)
 }
 
@@ -92,56 +92,55 @@ func (s *Service) WithKBResolver(kbs KBResolver) *Service {
 	return s
 }
 
+// WithModelConfigs 开启 AgentVersion 对模型配置版本的工作空间校验。
+func (s *Service) WithModelConfigs(models ModelConfigValidator) *Service {
+	s.models = models
+	return s
+}
+
 // storedSnapshot 是持久化在 agent_versions.snapshot_json 里的快照（写死依赖版本号）。
 type storedSnapshot struct {
-	ID                    string   `json:"id"`
-	SystemPrompt          string   `json:"system_prompt,omitempty"`            // 字面量（简单 Agent）
-	SystemPromptID        string   `json:"system_prompt_id,omitempty"`         // Prompt 中心
-	SystemPromptVersionID string   `json:"system_prompt_version_id,omitempty"` // pinned 版本
-	ModelConfigVersionID  string   `json:"model_config_version_id"`            // 由 Prompt 版本派生并固定
-	UserPromptID          string   `json:"user_prompt_id,omitempty"`           // 首轮任务输入模板
-	PromptEnv             string   `json:"prompt_env,omitempty"`               // 新会话按环境解析当前版本
-	ToolIDs               []string `json:"tool_ids,omitempty"`                 // 控制面编辑用注册 ID
-	ToolVersionIDs        []string `json:"tool_version_ids,omitempty"`         // pin 死的工具【版本 ID】(非注册 ID)
-	SkillVersionIDs       []string `json:"skill_version_ids,omitempty"`
-	KBIDs                 []string `json:"kb_ids,omitempty"`
-	AllowNetwork          bool     `json:"allow_network,omitempty"`
-	NetworkPolicySet      bool     `json:"network_policy_set,omitempty"`
-	MaxSteps              int      `json:"max_steps,omitempty"`
+	ID                    string                  `json:"id"`
+	SystemPromptVersionID string                  `json:"system_prompt_version_id"`
+	UserPromptVersionID   string                  `json:"user_prompt_version_id,omitempty"`
+	ModelConfigVersionID  string                  `json:"model_config_version_id"`
+	GenerationConfig      domain.GenerationConfig `json:"generation_config"`
+	ToolVersionIDs        []string                `json:"tool_version_ids,omitempty"`
+	SkillVersionIDs       []string                `json:"skill_version_ids,omitempty"`
+	KBIDs                 []string                `json:"kb_ids,omitempty"`
+	AllowNetwork          bool                    `json:"allow_network,omitempty"`
+	NetworkPolicySet      bool                    `json:"network_policy_set,omitempty"`
+	MaxSteps              int                     `json:"max_steps,omitempty"`
 }
 
 // CreateAgentRequest 创建Agent请求
 type CreateAgentRequest struct {
-	WorkspaceID           string   `json:"workspace_id"`
-	Name                  string   `json:"name"`
-	Template              string   `json:"template"`
-	SystemPrompt          string   `json:"system_prompt"`            // 字面量
-	SystemPromptVersionID string   `json:"system_prompt_version_id"` // 或绑定 Prompt 中心版本
-	SystemPromptID        string   `json:"system_prompt_id"`         // 推荐：绑定 Prompt，创建会话时按环境解析版本
-	UserPromptID          string   `json:"user_prompt_id"`           // 可选：首轮任务输入模板
-	PromptEnv             string   `json:"prompt_env"`
-	ToolIDs               []string `json:"tool_ids"`
-	SkillVersionIDs       []string `json:"skill_version_ids"`
-	KBIDs                 []string `json:"kb_ids"`
-	AllowNetwork          *bool    `json:"allow_network,omitempty"`
-	MaxSteps              int      `json:"max_steps"`
-	CreatedBy             string   `json:"created_by"`
+	WorkspaceID           string                  `json:"workspace_id"`
+	Name                  string                  `json:"name"`
+	Template              string                  `json:"template"`
+	SystemPromptVersionID string                  `json:"system_prompt_version_id"`
+	UserPromptVersionID   string                  `json:"user_prompt_version_id"`
+	ModelConfigVersionID  string                  `json:"model_config_version_id"`
+	GenerationConfig      domain.GenerationConfig `json:"generation_config"`
+	ToolVersionIDs        []string                `json:"tool_version_ids"`
+	SkillVersionIDs       []string                `json:"skill_version_ids"`
+	KBIDs                 []string                `json:"kb_ids"`
+	AllowNetwork          *bool                   `json:"allow_network,omitempty"`
+	MaxSteps              int                     `json:"max_steps"`
+	CreatedBy             string                  `json:"created_by"`
 }
 
 // AgentVersionConfig 是创建不可变 Agent 版本时提交的可编辑配置。
-// ToolIDs 是注册 ID；Service 会在保存快照时解析并固化 ToolVersionIDs。
 type AgentVersionConfig struct {
-	SystemPrompt          string   `json:"system_prompt"`
-	SystemPromptVersionID string   `json:"system_prompt_version_id"`
-	SystemPromptID        string   `json:"system_prompt_id"`
-	ModelConfigVersionID  string   `json:"model_config_version_id,omitempty"` // 只读：由 system prompt 版本派生
-	UserPromptID          string   `json:"user_prompt_id"`
-	PromptEnv             string   `json:"prompt_env"`
-	ToolIDs               []string `json:"tool_ids"`
-	SkillVersionIDs       []string `json:"skill_version_ids"`
-	KBIDs                 []string `json:"kb_ids"`
-	AllowNetwork          *bool    `json:"allow_network,omitempty"`
-	MaxSteps              int      `json:"max_steps"`
+	SystemPromptVersionID string                  `json:"system_prompt_version_id"`
+	UserPromptVersionID   string                  `json:"user_prompt_version_id"`
+	ModelConfigVersionID  string                  `json:"model_config_version_id"`
+	GenerationConfig      domain.GenerationConfig `json:"generation_config"`
+	ToolVersionIDs        []string                `json:"tool_version_ids"`
+	SkillVersionIDs       []string                `json:"skill_version_ids"`
+	KBIDs                 []string                `json:"kb_ids"`
+	AllowNetwork          *bool                   `json:"allow_network,omitempty"`
+	MaxSteps              int                     `json:"max_steps"`
 }
 
 // AgentVersionView 向控制面返回版本元数据与可再次编辑的配置。
@@ -160,7 +159,6 @@ type UserPromptInputSpec struct {
 	Enabled         bool   `json:"enabled"`
 	PromptID        string `json:"prompt_id,omitempty"`
 	PromptName      string `json:"prompt_name,omitempty"`
-	PromptEnv       string `json:"prompt_env,omitempty"`
 	PromptVersionID string `json:"prompt_version_id,omitempty"`
 	PromptVersion   int    `json:"prompt_version,omitempty"`
 	VariablesSchema string `json:"variables_schema,omitempty"`
@@ -168,10 +166,9 @@ type UserPromptInputSpec struct {
 
 // CreateAgent 创建Agent及其 v1 immutable 快照，并绑定到 dev 环境。
 func (s *Service) CreateAgent(ctx context.Context, req CreateAgentRequest) (*domain.Agent, error) {
-	if err := s.validatePromptBindings(ctx, req.WorkspaceID, AgentVersionConfig{
-		SystemPrompt: req.SystemPrompt, SystemPromptID: req.SystemPromptID,
-		SystemPromptVersionID: req.SystemPromptVersionID, UserPromptID: req.UserPromptID,
-		PromptEnv: req.PromptEnv,
+	if err := s.validateVersionDependencies(ctx, req.WorkspaceID, AgentVersionConfig{
+		SystemPromptVersionID: req.SystemPromptVersionID, UserPromptVersionID: req.UserPromptVersionID,
+		ModelConfigVersionID: req.ModelConfigVersionID,
 	}); err != nil {
 		return nil, err
 	}
@@ -185,9 +182,9 @@ func (s *Service) CreateAgent(ctx context.Context, req CreateAgentRequest) (*dom
 		UpdatedAt:   time.Now(),
 	}
 	snapJSON, err := s.buildSnapshotJSON(ctx, ag.ID, req.WorkspaceID, AgentVersionConfig{
-		SystemPrompt: req.SystemPrompt, SystemPromptID: req.SystemPromptID,
-		SystemPromptVersionID: req.SystemPromptVersionID, UserPromptID: req.UserPromptID, PromptEnv: req.PromptEnv,
-		ToolIDs: req.ToolIDs, SkillVersionIDs: req.SkillVersionIDs, KBIDs: req.KBIDs,
+		SystemPromptVersionID: req.SystemPromptVersionID, UserPromptVersionID: req.UserPromptVersionID,
+		ModelConfigVersionID: req.ModelConfigVersionID, GenerationConfig: req.GenerationConfig,
+		ToolVersionIDs: req.ToolVersionIDs, SkillVersionIDs: req.SkillVersionIDs, KBIDs: req.KBIDs,
 		AllowNetwork: req.AllowNetwork, MaxSteps: req.MaxSteps,
 	})
 	if err != nil {
@@ -230,7 +227,7 @@ func (s *Service) CreateAgentVersion(
 	if workspaceID != "" && ag.WorkspaceID != workspaceID {
 		return nil, fmt.Errorf("agent does not belong to current workspace")
 	}
-	if err := s.validatePromptBindings(ctx, ag.WorkspaceID, cfg); err != nil {
+	if err := s.validateVersionDependencies(ctx, ag.WorkspaceID, cfg); err != nil {
 		return nil, err
 	}
 	snapshotJSON, err := s.buildSnapshotJSON(ctx, agentID, ag.WorkspaceID, cfg)
@@ -333,51 +330,32 @@ func (s *Service) AttachSkillVersion(
 }
 
 func (s *Service) buildSnapshotJSON(ctx context.Context, agentID, workspaceID string, cfg AgentVersionConfig) ([]byte, error) {
-	cfg.ToolIDs = uniqueStrings(cfg.ToolIDs)
+	cfg.ToolVersionIDs = uniqueStrings(cfg.ToolVersionIDs)
 	cfg.SkillVersionIDs = uniqueStrings(cfg.SkillVersionIDs)
 	cfg.KBIDs = uniqueStrings(cfg.KBIDs)
-	if cfg.PromptEnv == "" {
-		cfg.PromptEnv = prompt.EnvDev
-	}
 	if cfg.MaxSteps <= 0 {
 		cfg.MaxSteps = 6
 	}
 	if s.prompt == nil {
 		return nil, fmt.Errorf("prompt resolver is not configured")
 	}
-	pinnedPromptVersionID := cfg.SystemPromptVersionID
-	if pinnedPromptVersionID == "" {
-		resolvedVersionID, err := s.prompt.ResolveVersion(ctx, cfg.SystemPromptID, cfg.PromptEnv, "")
-		if err != nil {
-			return nil, fmt.Errorf("resolve system prompt version: %w", err)
-		}
-		pinnedPromptVersionID = resolvedVersionID
-	}
-	pinnedPromptVersion, err := s.prompt.GetVersion(ctx, pinnedPromptVersionID)
+	pinnedPromptVersion, err := s.prompt.GetVersion(ctx, cfg.SystemPromptVersionID)
 	if err != nil {
 		return nil, fmt.Errorf("get pinned system prompt version: %w", err)
-	}
-	if pinnedPromptVersion.ModelConfigVersionID == "" {
-		return nil, fmt.Errorf("system prompt version has no model config version")
-	}
-	pinnedPrompt, err := s.prompt.GetPrompt(ctx, pinnedPromptVersion.PromptID)
-	if err != nil {
-		return nil, fmt.Errorf("get pinned system prompt: %w", err)
 	}
 	allowNetwork := true // 兼容旧 API 客户端；新版 Admin 会显式提交 true/false。
 	if cfg.AllowNetwork != nil {
 		allowNetwork = *cfg.AllowNetwork
 	}
 
-	toolVersionIDs := make([]string, 0, len(cfg.ToolIDs))
-	toolNames := make(map[string]bool, len(cfg.ToolIDs))
-	for _, toolID := range cfg.ToolIDs {
+	toolNames := make(map[string]bool, len(cfg.ToolVersionIDs))
+	for _, versionID := range cfg.ToolVersionIDs {
 		if s.tools == nil {
 			return nil, fmt.Errorf("agent has tools but tool resolver is not configured")
 		}
-		versionID, err := s.tools.GetToolCurrentVersionID(ctx, toolID)
+		toolID, err := s.tools.ValidateVersion(ctx, versionID, workspaceID, true)
 		if err != nil {
-			return nil, fmt.Errorf("pin tool %s: %w", toolID, err)
+			return nil, fmt.Errorf("validate tool version %s: %w", versionID, err)
 		}
 		meta, err := s.tools.GetToolMeta(ctx, toolID)
 		if err != nil {
@@ -386,7 +364,6 @@ func (s *Service) buildSnapshotJSON(ctx context.Context, agentID, workspaceID st
 		if meta.WorkspaceID != workspaceID {
 			return nil, fmt.Errorf("tool %s does not belong to current workspace", toolID)
 		}
-		toolVersionIDs = append(toolVersionIDs, versionID)
 		toolNames[meta.Name] = true
 	}
 
@@ -434,10 +411,10 @@ func (s *Service) buildSnapshotJSON(ctx context.Context, agentID, workspaceID st
 	}
 
 	snap := storedSnapshot{
-		ID: agentID, SystemPromptID: pinnedPrompt.ID,
-		SystemPromptVersionID: pinnedPromptVersion.ID, ModelConfigVersionID: pinnedPromptVersion.ModelConfigVersionID,
-		UserPromptID: cfg.UserPromptID, PromptEnv: cfg.PromptEnv,
-		ToolIDs: cfg.ToolIDs, ToolVersionIDs: toolVersionIDs,
+		ID: agentID, SystemPromptVersionID: pinnedPromptVersion.ID,
+		UserPromptVersionID:  cfg.UserPromptVersionID,
+		ModelConfigVersionID: cfg.ModelConfigVersionID, GenerationConfig: cfg.GenerationConfig,
+		ToolVersionIDs:  cfg.ToolVersionIDs,
 		SkillVersionIDs: cfg.SkillVersionIDs, KBIDs: cfg.KBIDs,
 		AllowNetwork: allowNetwork, NetworkPolicySet: true, MaxSteps: cfg.MaxSteps,
 	}
@@ -453,94 +430,70 @@ func (s *Service) versionView(ctx context.Context, v *domain.AgentVersion) (*Age
 	if err := json.Unmarshal([]byte(v.SnapshotJSON), &snap); err != nil {
 		return nil, fmt.Errorf("unmarshal agent version %s: %w", v.ID, err)
 	}
-	toolIDs := append([]string(nil), snap.ToolIDs...)
 	allowNetwork := snap.AllowNetwork
 	if !snap.NetworkPolicySet {
 		allowNetwork = true
 	}
-	if len(toolIDs) == 0 && len(snap.ToolVersionIDs) > 0 && s.tools != nil {
-		for _, versionID := range snap.ToolVersionIDs {
-			toolID, err := s.tools.GetToolIDByVersion(ctx, versionID)
-			if err != nil {
-				return nil, fmt.Errorf("resolve tool version %s: %w", versionID, err)
-			}
-			toolIDs = append(toolIDs, toolID)
-		}
-	}
 	return &AgentVersionView{
 		ID: v.ID, AgentID: v.AgentID, Version: v.Version, CreatedBy: v.CreatedBy, CreatedAt: v.CreatedAt,
 		Config: AgentVersionConfig{
-			SystemPrompt: snap.SystemPrompt, SystemPromptID: snap.SystemPromptID,
-			SystemPromptVersionID: snap.SystemPromptVersionID, ModelConfigVersionID: snap.ModelConfigVersionID,
-			UserPromptID: snap.UserPromptID, PromptEnv: snap.PromptEnv,
-			ToolIDs: toolIDs, SkillVersionIDs: snap.SkillVersionIDs, KBIDs: snap.KBIDs,
+			SystemPromptVersionID: snap.SystemPromptVersionID,
+			UserPromptVersionID:   snap.UserPromptVersionID,
+			ModelConfigVersionID:  snap.ModelConfigVersionID, GenerationConfig: snap.GenerationConfig,
+			ToolVersionIDs:  append([]string(nil), snap.ToolVersionIDs...),
+			SkillVersionIDs: snap.SkillVersionIDs, KBIDs: snap.KBIDs,
 			AllowNetwork: &allowNetwork, MaxSteps: snap.MaxSteps,
 		},
 	}, nil
 }
 
-func (s *Service) validatePromptBindings(ctx context.Context, workspaceID string, cfg AgentVersionConfig) error {
-	if strings.TrimSpace(cfg.SystemPrompt) != "" {
-		return fmt.Errorf("literal system_prompt is not supported; bind a versioned prompt")
+func (s *Service) validateVersionDependencies(ctx context.Context, workspaceID string, cfg AgentVersionConfig) error {
+	if cfg.SystemPromptVersionID == "" {
+		return fmt.Errorf("system_prompt_version_id is required")
 	}
-	systemSources := 0
-	if cfg.SystemPromptID != "" {
-		systemSources++
-	}
-	if cfg.SystemPromptVersionID != "" {
-		systemSources++
-	}
-	if systemSources != 1 {
-		return fmt.Errorf("choose exactly one versioned system prompt source: system_prompt_id or system_prompt_version_id")
-	}
-	if cfg.PromptEnv != "" && cfg.PromptEnv != prompt.EnvDev && cfg.PromptEnv != prompt.EnvStaging && cfg.PromptEnv != prompt.EnvProd {
-		return fmt.Errorf("prompt_env must be dev, staging or prod")
+	if cfg.ModelConfigVersionID == "" {
+		return fmt.Errorf("model_config_version_id is required")
 	}
 	if s.prompt == nil {
 		return fmt.Errorf("prompt resolver is not configured")
 	}
-	if cfg.SystemPromptID != "" {
-		metadata, err := s.prompt.GetPrompt(ctx, cfg.SystemPromptID)
-		if err != nil {
-			return fmt.Errorf("get system prompt: %w", err)
-		}
-		if metadata.WorkspaceID != workspaceID {
-			return fmt.Errorf("system prompt does not belong to current workspace")
-		}
-		if isUserPromptCategory(metadata.Category) {
-			return fmt.Errorf("system prompt binding cannot reference a user prompt template")
-		}
+	systemVersion, err := s.prompt.GetVersion(ctx, cfg.SystemPromptVersionID)
+	if err != nil {
+		return fmt.Errorf("get system prompt version: %w", err)
 	}
-	if cfg.SystemPromptVersionID != "" {
-		version, err := s.prompt.GetVersion(ctx, cfg.SystemPromptVersionID)
-		if err != nil {
-			return fmt.Errorf("get pinned system prompt version: %w", err)
-		}
-		metadata, err := s.prompt.GetPrompt(ctx, version.PromptID)
-		if err != nil {
-			return fmt.Errorf("get pinned system prompt: %w", err)
-		}
-		if metadata.WorkspaceID != workspaceID {
-			return fmt.Errorf("pinned system prompt does not belong to current workspace")
-		}
-		if isUserPromptCategory(metadata.Category) {
-			return fmt.Errorf("pinned system prompt cannot reference a user prompt template")
-		}
-		if version.ModelConfigVersionID == "" {
-			return fmt.Errorf("pinned system prompt version has no model config version")
-		}
+	systemPrompt, err := s.prompt.GetPrompt(ctx, systemVersion.PromptID)
+	if err != nil {
+		return fmt.Errorf("get system prompt: %w", err)
 	}
-	if cfg.UserPromptID != "" {
-		metadata, err := s.prompt.GetPrompt(ctx, cfg.UserPromptID)
+	if systemPrompt.WorkspaceID != workspaceID {
+		return fmt.Errorf("system prompt version does not belong to current workspace")
+	}
+	if isUserPromptCategory(systemPrompt.Category) {
+		return fmt.Errorf("system prompt version cannot reference a user prompt template")
+	}
+	// System Prompt 没有运行时变量输入入口；用与运行时一致的 nil 输入预渲染，
+	// 防止 AgentVersion 创建成功后在每次执行时确定性失败。
+	if _, err := s.prompt.RenderByVersion(ctx, cfg.SystemPromptVersionID, nil); err != nil {
+		return fmt.Errorf("system prompt must render without variables: %w", err)
+	}
+	if cfg.UserPromptVersionID != "" {
+		userVersion, err := s.prompt.GetVersion(ctx, cfg.UserPromptVersionID)
+		if err != nil {
+			return fmt.Errorf("get user prompt version: %w", err)
+		}
+		userPrompt, err := s.prompt.GetPrompt(ctx, userVersion.PromptID)
 		if err != nil {
 			return fmt.Errorf("get user prompt template: %w", err)
 		}
-		if metadata.WorkspaceID != workspaceID {
-			return fmt.Errorf("user prompt template does not belong to current workspace")
+		if userPrompt.WorkspaceID != workspaceID || !isUserPromptCategory(userPrompt.Category) {
+			return fmt.Errorf("user prompt version must reference a user prompt template in current workspace")
 		}
-		if !isUserPromptCategory(metadata.Category) {
-			return fmt.Errorf("user prompt binding must reference a user prompt template")
-		}
+	}
+	if s.models == nil {
+		return fmt.Errorf("model config resolver is not configured")
+	}
+	if err := s.models.ValidateConfigVersion(ctx, workspaceID, cfg.ModelConfigVersionID); err != nil {
+		return fmt.Errorf("validate model config version: %w", err)
 	}
 	return nil
 }
@@ -583,21 +536,11 @@ func (s *Service) GetAgentSnapshotByVersion(ctx context.Context, agentVersionID 
 	if s.prompt == nil {
 		return nil, fmt.Errorf("prompt resolver is not configured")
 	}
-	// system prompt 与模型配置都只从快照中 pinned 的 Prompt 版本解析。
-	systemPrompt := ""
-	var promptVersionID, modelConfigVersionID string
-	var generationConfig domain.GenerationConfig
-	resolved, err := s.prompt.ResolveConfigByVersion(ctx, snap.SystemPromptVersionID, nil)
+	// Prompt、模型和生成参数都由 AgentVersion 快照直接固定。
+	systemPrompt, err := s.prompt.RenderByVersion(ctx, snap.SystemPromptVersionID, nil)
 	if err != nil {
 		return nil, fmt.Errorf("render system prompt: %w", err)
 	}
-	if resolved.ModelConfigVersionID == "" || resolved.ModelConfigVersionID != snap.ModelConfigVersionID {
-		return nil, fmt.Errorf("agent snapshot model config does not match pinned prompt version")
-	}
-	systemPrompt = resolved.Rendered
-	promptVersionID = resolved.VersionID
-	modelConfigVersionID = resolved.ModelConfigVersionID
-	generationConfig = resolved.GenerationConfig
 	ag, err := s.store.GetAgent(ctx, version.AgentID)
 	if err != nil {
 		return nil, fmt.Errorf("get agent: %w", err)
@@ -606,12 +549,7 @@ func (s *Service) GetAgentSnapshotByVersion(ctx context.Context, agentVersionID 
 		if s.tools == nil {
 			return nil, fmt.Errorf("agent has tools but tool resolver is not configured")
 		}
-		toolID, err := s.tools.GetToolIDByVersion(ctx, toolVersionID)
-		if err != nil {
-			return nil, fmt.Errorf("resolve tool version %s: %w", toolVersionID, err)
-		}
-		meta, err := s.tools.GetToolMeta(ctx, toolID)
-		if err != nil || meta.WorkspaceID != ag.WorkspaceID {
+		if _, err := s.tools.ValidateVersion(ctx, toolVersionID, ag.WorkspaceID, false); err != nil {
 			return nil, fmt.Errorf("tool version %s does not belong to agent workspace", toolVersionID)
 		}
 	}
@@ -653,9 +591,9 @@ func (s *Service) GetAgentSnapshotByVersion(ctx context.Context, agentVersionID 
 		AgentID:              version.AgentID,
 		WorkspaceID:          ag.WorkspaceID,
 		SystemPrompt:         systemPrompt,
-		PromptVersionID:      promptVersionID,
-		ModelConfigVersionID: modelConfigVersionID,
-		GenerationConfig:     generationConfig,
+		PromptVersionID:      snap.SystemPromptVersionID,
+		ModelConfigVersionID: snap.ModelConfigVersionID,
+		GenerationConfig:     snap.GenerationConfig,
 		ToolVersionIDs:       snap.ToolVersionIDs,
 		Skills:               specs,
 		KBIDs:                snap.KBIDs,
@@ -670,9 +608,9 @@ func (s *Service) GetUserPromptInputSpec(
 	agentID, workspaceID, agentEnv, userID string,
 ) (*UserPromptInputSpec, error) {
 	if agentEnv == "" {
-		agentEnv = prompt.EnvDev
+		agentEnv = "dev"
 	}
-	if agentEnv != prompt.EnvDev && agentEnv != prompt.EnvStaging && agentEnv != prompt.EnvProd {
+	if agentEnv != "dev" && agentEnv != "staging" && agentEnv != "prod" {
 		return nil, fmt.Errorf("agent env must be dev, staging or prod")
 	}
 	ag, err := s.store.GetAgent(ctx, agentID)
@@ -690,36 +628,25 @@ func (s *Service) GetUserPromptInputSpec(
 	if err := json.Unmarshal([]byte(version.SnapshotJSON), &snapshot); err != nil {
 		return nil, fmt.Errorf("unmarshal agent snapshot: %w", err)
 	}
-	if snapshot.UserPromptID == "" {
+	if snapshot.UserPromptVersionID == "" {
 		return &UserPromptInputSpec{Enabled: false}, nil
 	}
 	if s.prompt == nil {
 		return nil, fmt.Errorf("prompt resolver is not configured")
 	}
-	metadata, err := s.prompt.GetPrompt(ctx, snapshot.UserPromptID)
+	promptVersion, err := s.prompt.GetVersion(ctx, snapshot.UserPromptVersionID)
+	if err != nil {
+		return nil, fmt.Errorf("get user prompt version: %w", err)
+	}
+	metadata, err := s.prompt.GetPrompt(ctx, promptVersion.PromptID)
 	if err != nil {
 		return nil, fmt.Errorf("get user prompt template: %w", err)
 	}
 	if metadata.WorkspaceID != ag.WorkspaceID || !isUserPromptCategory(metadata.Category) {
 		return nil, fmt.Errorf("invalid user prompt template binding")
 	}
-	promptEnv := snapshot.PromptEnv
-	if promptEnv == "" {
-		promptEnv = prompt.EnvDev
-	}
-	promptVersionID, err := s.prompt.ResolveVersion(ctx, snapshot.UserPromptID, promptEnv, userID)
-	if err != nil {
-		return nil, fmt.Errorf("resolve user prompt version: %w", err)
-	}
-	promptVersion, err := s.prompt.GetVersion(ctx, promptVersionID)
-	if err != nil {
-		return nil, fmt.Errorf("get user prompt version: %w", err)
-	}
-	if promptVersion.PromptID != snapshot.UserPromptID {
-		return nil, fmt.Errorf("resolved user prompt version does not belong to template")
-	}
 	return &UserPromptInputSpec{
-		Enabled: true, PromptID: metadata.ID, PromptName: metadata.Name, PromptEnv: promptEnv,
+		Enabled: true, PromptID: metadata.ID, PromptName: metadata.Name,
 		PromptVersionID: promptVersion.ID, PromptVersion: promptVersion.Version,
 		VariablesSchema: promptVersion.VariablesSchema,
 	}, nil
@@ -753,38 +680,20 @@ func (s *Service) PrepareUserMessage(
 	if err := json.Unmarshal([]byte(version.SnapshotJSON), &snapshot); err != nil {
 		return "", "", fmt.Errorf("unmarshal agent snapshot: %w", err)
 	}
-	if snapshot.UserPromptID == "" {
+	if snapshot.UserPromptVersionID == "" {
 		return "", "", fmt.Errorf("agent version has no user prompt template")
 	}
 	if s.prompt == nil {
 		return "", "", fmt.Errorf("prompt resolver is not configured")
 	}
 
-	promptVersionID := requestedVersionID
-	rendered := ""
-	if promptVersionID != "" {
-		promptVersion, err := s.prompt.GetVersion(ctx, promptVersionID)
-		if err != nil {
-			return "", "", fmt.Errorf("get requested user prompt version: %w", err)
-		}
-		if promptVersion.PromptID != snapshot.UserPromptID {
-			return "", "", fmt.Errorf("requested user prompt version does not belong to agent template")
-		}
-		rendered, err = s.prompt.RenderByVersion(ctx, promptVersionID, variables)
-		if err != nil {
-			return "", "", fmt.Errorf("render user prompt template: %w", err)
-		}
-	} else {
-		promptEnv := snapshot.PromptEnv
-		if promptEnv == "" {
-			promptEnv = prompt.EnvDev
-		}
-		resolved, err := s.prompt.ResolveConfig(ctx, snapshot.UserPromptID, promptEnv, userID, variables)
-		if err != nil {
-			return "", "", fmt.Errorf("resolve user prompt template: %w", err)
-		}
-		promptVersionID = resolved.VersionID
-		rendered = resolved.Rendered
+	if requestedVersionID != "" && requestedVersionID != snapshot.UserPromptVersionID {
+		return "", "", fmt.Errorf("requested user prompt version does not match agent version")
+	}
+	promptVersionID := snapshot.UserPromptVersionID
+	rendered, err := s.prompt.RenderByVersion(ctx, promptVersionID, variables)
+	if err != nil {
+		return "", "", fmt.Errorf("render user prompt template: %w", err)
 	}
 	if extra := strings.TrimSpace(rawMessage); extra != "" {
 		rendered += "\n\n# 补充说明\n\n" + extra
@@ -849,21 +758,10 @@ func (s *Service) newConversation(ctx context.Context, ver *domain.AgentVersion,
 	if env == "" {
 		env = "dev"
 	}
-	runtimeConfig := domain.ConversationRuntimeConfig{Environment: env}
-	if s.prompt == nil || snap.SystemPromptVersionID == "" || snap.ModelConfigVersionID == "" {
+	if snap.SystemPromptVersionID == "" || snap.ModelConfigVersionID == "" {
 		return nil, fmt.Errorf("agent version is missing pinned prompt/model configuration")
 	}
-	resolved, err := s.prompt.ResolveConfigByVersion(ctx, snap.SystemPromptVersionID, nil)
-	if err != nil {
-		return nil, fmt.Errorf("resolve prompt config: %w", err)
-	}
-	if resolved.ModelConfigVersionID == "" || resolved.ModelConfigVersionID != snap.ModelConfigVersionID {
-		return nil, fmt.Errorf("agent snapshot model config does not match pinned prompt version")
-	}
-	runtimeConfig = domain.ConversationRuntimeConfig{
-		Environment: env, SystemPrompt: resolved.Rendered, PromptVersionID: resolved.VersionID,
-		ModelConfigVersionID: resolved.ModelConfigVersionID, GenerationConfig: resolved.GenerationConfig,
-	}
+	runtimeConfig := domain.ConversationRuntimeConfig{Environment: env}
 	runtimeJSON, err := json.Marshal(runtimeConfig)
 	if err != nil {
 		return nil, err
