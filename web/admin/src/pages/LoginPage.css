@@ -1,0 +1,115 @@
+/* 登录页：极光渐变背景 + 玻璃质感卡片（仅视觉样式） */
+
+.login-page {
+  position: relative;
+  display: flex;
+  min-height: 100vh;
+  min-height: 100dvh;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  overflow: hidden;
+  background:
+    radial-gradient(1000px 520px at 12% -8%, rgba(109, 92, 231, 0.4), transparent 62%),
+    radial-gradient(900px 520px at 92% 12%, rgba(79, 123, 247, 0.36), transparent 60%),
+    radial-gradient(760px 560px at 78% 96%, rgba(56, 189, 248, 0.22), transparent 58%),
+    linear-gradient(160deg, #0b1322 0%, #101a36 55%, #131c3e 100%);
+}
+
+.login-page::before,
+.login-page::after {
+  position: absolute;
+  border-radius: 50%;
+  filter: blur(2px);
+  content: '';
+  pointer-events: none;
+}
+
+.login-page::before {
+  width: 420px;
+  height: 420px;
+  top: -140px;
+  right: -110px;
+  background: radial-gradient(circle, rgba(255, 255, 255, 0.07), transparent 65%);
+}
+
+.login-page::after {
+  width: 520px;
+  height: 520px;
+  bottom: -180px;
+  left: -140px;
+  background: radial-gradient(circle, rgba(255, 255, 255, 0.05), transparent 65%);
+}
+
+.login-card.ant-card {
+  position: relative;
+  z-index: 1;
+  width: 400px;
+  max-width: calc(100vw - 48px);
+  background: rgba(255, 255, 255, 0.94);
+  border: 1px solid rgba(255, 255, 255, 0.65);
+  border-radius: 18px;
+  box-shadow:
+    0 24px 64px -16px rgba(5, 10, 24, 0.55),
+    0 4px 16px rgba(5, 10, 24, 0.2);
+  backdrop-filter: saturate(1.3) blur(12px);
+  -webkit-backdrop-filter: saturate(1.3) blur(12px);
+}
+
+.login-card .ant-card-body {
+  padding: 36px 36px 32px;
+}
+
+.login-brand {
+  margin-bottom: 28px;
+  text-align: center;
+}
+
+.login-brand-mark {
+  display: inline-flex;
+  width: 52px;
+  height: 52px;
+  align-items: center;
+  justify-content: center;
+  margin-bottom: 16px;
+  color: #fff;
+  font-size: 20px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  background: linear-gradient(135deg, #6d5ce7 0%, #4f7bf7 100%);
+  border-radius: 15px;
+  box-shadow:
+    0 10px 24px rgba(88, 92, 224, 0.4),
+    inset 0 1px 0 rgba(255, 255, 255, 0.3);
+}
+
+.login-brand h3.ant-typography {
+  margin: 0;
+  font-size: 21px;
+  letter-spacing: 0;
+}
+
+.login-brand .ant-typography-secondary {
+  display: block;
+  margin-top: 6px;
+  font-size: 13px;
+}
+
+.login-card .ant-input-affix-wrapper,
+.login-card .ant-input {
+  border-radius: 9px;
+}
+
+.login-card .ant-btn-primary {
+  height: 42px;
+  margin-top: 4px;
+  font-size: 15px;
+  font-weight: 600;
+  border-radius: 10px;
+}
+
+@media (max-width: 480px) {
+  .login-card .ant-card-body {
+    padding: 28px 24px;
+  }
+}

@@ -22,7 +22,9 @@ body {
   height: 100vh;
   height: 100dvh;
   overflow: hidden;
-  box-shadow: 2px 0 10px rgb(15 23 42 / 10%);
+  background: linear-gradient(180deg, #0b1322 0%, #0e1730 52%, #121a3a 100%);
+  border-right: 1px solid rgba(148, 163, 184, 0.1);
+  box-shadow: 4px 0 24px rgba(9, 14, 28, 0.28);
 }
 
 .app-sidebar .ant-layout-sider-children {
@@ -35,27 +37,80 @@ body {
 
 .app-brand {
   display: flex;
-  height: 56px;
-  flex: 0 0 56px;
+  height: 60px;
+  flex: 0 0 60px;
   align-items: center;
-  justify-content: center;
+  justify-content: flex-start;
+  padding: 0 20px;
+  gap: 11px;
   color: #fff;
-  font-size: 20px;
-  font-weight: 700;
-  letter-spacing: 1px;
+  font-size: 15px;
+  font-weight: 650;
+  letter-spacing: 0.02em;
+  border-bottom: 1px solid rgba(148, 163, 184, 0.1);
+}
+
+.app-brand::before {
+  width: 28px;
+  height: 28px;
+  flex: 0 0 auto;
+  background: linear-gradient(135deg, #6d5ce7 0%, #4f7bf7 100%);
+  border-radius: 9px;
+  box-shadow:
+    0 4px 12px rgba(109, 92, 231, 0.5),
+    inset 0 1px 0 rgba(255, 255, 255, 0.28);
+  content: '';
 }
 
 .app-brand.is-collapsed {
-  font-size: 18px;
+  justify-content: center;
+  padding: 0;
+  gap: 0;
+  font-size: 0;
+}
+
+.app-brand.is-collapsed::before {
+  width: 30px;
+  height: 30px;
 }
 
 .app-navigation.ant-menu {
   min-height: 0;
   flex: 1 1 auto;
+  padding: 10px;
   overflow-x: hidden;
   overflow-y: auto;
   overscroll-behavior: contain;
+  background: transparent;
   scrollbar-width: thin;
+}
+
+.app-navigation .ant-menu-item-group-title {
+  padding: 18px 12px 8px;
+  color: rgba(148, 163, 184, 0.55);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.1em;
+}
+
+.app-navigation .ant-menu-item {
+  margin-block: 2px;
+  border-radius: 8px;
+  transition:
+    background 0.16s ease,
+    color 0.16s ease,
+    box-shadow 0.16s ease;
+}
+
+.app-navigation .ant-menu-item .ant-menu-item-icon {
+  font-size: 15px;
+}
+
+.app-navigation .ant-menu-item-selected {
+  background: linear-gradient(135deg, #5a5be0 0%, #4f7bf7 100%);
+  box-shadow:
+    0 6px 16px rgba(79, 86, 216, 0.4),
+    inset 0 1px 0 rgba(255, 255, 255, 0.22);
 }
 
 .app-main-shell.ant-layout {
@@ -63,25 +118,38 @@ body {
   min-width: 0;
   min-height: 0;
   overflow: hidden;
+  background:
+    radial-gradient(1200px 480px at 85% -10%, rgba(99, 102, 241, 0.06), transparent 60%),
+    radial-gradient(900px 420px at -5% 110%, rgba(56, 189, 248, 0.05), transparent 55%),
+    #f3f5fa;
 }
 
 .app-header.ant-layout-header {
   position: relative;
   z-index: 10;
   display: flex;
-  height: 64px;
+  height: 60px;
   min-width: 0;
-  flex: 0 0 64px;
+  flex: 0 0 60px;
   align-items: center;
   justify-content: space-between;
-  padding: 0 16px;
-  background: #fff;
-  border-bottom: 1px solid #f0f0f0;
-  box-shadow: 0 2px 8px rgb(15 23 42 / 5%);
+  padding: 0 20px;
+  background: rgba(255, 255, 255, 0.82);
+  border-bottom: 1px solid rgba(226, 232, 240, 0.9);
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
+  backdrop-filter: saturate(1.4) blur(10px);
+  -webkit-backdrop-filter: saturate(1.4) blur(10px);
 }
 
 .app-sidebar-toggle {
   flex: 0 0 auto;
+  color: #5c6579;
+  border-radius: 8px;
+}
+
+.app-sidebar-toggle:hover {
+  color: #4f56d8 !important;
+  background: rgba(79, 86, 216, 0.08) !important;
 }
 
 .app-header-actions,
@@ -96,13 +164,32 @@ body {
 }
 
 .app-user-menu {
+  padding: 5px 10px 5px 6px;
   cursor: pointer;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  transition:
+    background 0.16s ease,
+    border-color 0.16s ease;
+}
+
+.app-user-menu:hover {
+  background: #f4f6fc;
+  border-color: #e6ebf3;
+}
+
+.app-user-menu .ant-avatar {
+  color: #fff;
+  background: linear-gradient(135deg, #6d5ce7 0%, #4f7bf7 100%);
+  box-shadow: 0 2px 6px rgba(88, 92, 224, 0.3);
 }
 
 .app-user-name {
   max-width: 180px;
   margin-left: 8px;
   overflow: hidden;
+  color: #3a4358;
+  font-weight: 500;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -111,7 +198,7 @@ body {
   min-width: 0;
   min-height: 0;
   flex: 1 1 auto;
-  padding: 16px;
+  padding: 20px 24px;
   overflow-x: auto;
   overflow-y: auto;
   overscroll-behavior: contain;
@@ -119,7 +206,8 @@ body {
 }
 
 .app-breadcrumb {
-  margin-bottom: 12px;
+  margin-bottom: 14px;
+  font-size: 13px;
 }
 
 .app-content.is-conversation-page {
@@ -134,9 +222,13 @@ body {
 .app-page-surface {
   min-width: 0;
   min-height: 360px;
-  padding: 24px;
+  padding: 28px;
   background: #fff;
-  border-radius: 8px;
+  border: 1px solid #e6ebf3;
+  border-radius: 14px;
+  box-shadow:
+    0 1px 2px rgba(15, 23, 42, 0.04),
+    0 12px 32px -16px rgba(15, 23, 42, 0.1);
 }
 
 .app-page-surface.is-conversation-page {

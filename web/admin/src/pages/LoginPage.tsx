@@ -4,6 +4,7 @@ import { useState } from 'react'
 import { Redirect, useLocation, useSearch } from 'wouter'
 import { getLoginErrorMessage, login, type LoginRequest } from '@/api/auth'
 import { useAuthStore } from '@/store/authStore'
+import './LoginPage.css'
 
 export function LoginPage() {
   const [, navigate] = useLocation()
@@ -35,17 +36,12 @@ export function LoginPage() {
   }
 
   return (
-    <div
-      style={{
-        minHeight: '100vh',
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'center',
-        background: 'linear-gradient(135deg,#1677ff22,#722ed122)',
-      }}
-    >
-      <Card style={{ width: 360 }}>
-        <div style={{ textAlign: 'center', marginBottom: 24 }}>
+    <div className="login-page">
+      <Card className="login-card">
+        <div className="login-brand">
+          <span className="login-brand-mark" aria-hidden="true">
+            EO
+          </span>
           <Typography.Title level={3} style={{ margin: 0 }}>
             电商运营 Agent 管理台
           </Typography.Title>

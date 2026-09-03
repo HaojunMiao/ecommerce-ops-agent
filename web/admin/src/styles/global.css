@@ -1,0 +1,179 @@
+/* ============================================================
+ * 全局设计基座：字体、滚动条、选区以及 antd 组件的统一精修。
+ * 仅视觉样式，不涉及任何组件逻辑。
+ * ========================================================== */
+
+:root {
+  --eo-font:
+    -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, 'PingFang SC',
+    'Hiragino Sans GB', 'Microsoft YaHei', 'Noto Sans CJK SC', sans-serif;
+  --eo-primary: #4f56d8;
+  --eo-primary-strong: #3b43b8;
+  --eo-primary-soft: #eef0ff;
+  --eo-gradient-primary: linear-gradient(135deg, #5a5be0 0%, #4f7bf7 100%);
+  --eo-border: #e6ebf3;
+  --eo-text-strong: #1d2433;
+  --eo-shadow-card:
+    0 1px 2px rgba(15, 23, 42, 0.04), 0 8px 24px -12px rgba(15, 23, 42, 0.1);
+  --eo-shadow-float:
+    0 12px 32px -12px rgba(15, 23, 42, 0.18), 0 4px 12px -4px rgba(15, 23, 42, 0.1);
+}
+
+body {
+  font-family: var(--eo-font);
+  color: var(--eo-text-strong);
+  background: #f3f5fa;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
+}
+
+::selection {
+  background: rgba(79, 86, 216, 0.16);
+}
+
+/* ---------- 细滚动条 ---------- */
+
+* {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(100, 116, 139, 0.35) transparent;
+}
+
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: rgba(100, 116, 139, 0.28);
+  border-radius: 8px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(100, 116, 139, 0.45);
+}
+
+/* ---------- 标题 ---------- */
+
+h1.ant-typography,
+h2.ant-typography,
+h3.ant-typography,
+h4.ant-typography,
+h5.ant-typography {
+  color: var(--eo-text-strong);
+  font-weight: 650;
+  letter-spacing: -0.01em;
+}
+
+/* ---------- 按钮 ---------- */
+
+.ant-btn {
+  transition:
+    color 0.18s ease,
+    border-color 0.18s ease,
+    background 0.18s ease,
+    box-shadow 0.18s ease,
+    transform 0.18s ease;
+}
+
+.ant-btn-primary:not(.ant-btn-dangerous):not(.ant-btn-background-ghost):not(:disabled) {
+  background-image: var(--eo-gradient-primary);
+  border: none;
+  box-shadow: 0 4px 12px rgba(88, 92, 224, 0.24);
+}
+
+.ant-btn-primary:not(.ant-btn-dangerous):not(.ant-btn-background-ghost):not(:disabled):hover {
+  box-shadow: 0 6px 18px rgba(88, 92, 224, 0.34);
+  transform: translateY(-1px);
+}
+
+.ant-btn-primary:not(.ant-btn-dangerous):not(.ant-btn-background-ghost):not(:disabled):active {
+  transform: translateY(0);
+}
+
+.ant-btn-default:not(:disabled):hover {
+  border-color: #a5adef;
+}
+
+/* ---------- 卡片 ---------- */
+
+.ant-card {
+  border-color: var(--eo-border);
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.03);
+  transition:
+    box-shadow 0.2s ease,
+    border-color 0.2s ease,
+    transform 0.2s ease;
+}
+
+.ant-card .ant-card-head {
+  border-bottom-color: #eef1f7;
+}
+
+.ant-card-hoverable:hover {
+  border-color: #d3dbee;
+  box-shadow: var(--eo-shadow-card);
+}
+
+/* ---------- 表格 ---------- */
+
+.ant-table-wrapper .ant-table-thead > tr > th {
+  font-weight: 600;
+}
+
+.ant-table-wrapper .ant-table-tbody > tr {
+  transition: background 0.15s ease;
+}
+
+.ant-table,
+.ant-statistic-content {
+  font-variant-numeric: tabular-nums;
+}
+
+/* ---------- 标签 ---------- */
+
+.ant-tag {
+  border-radius: 999px;
+}
+
+/* ---------- 表单 ---------- */
+
+.ant-form-item .ant-form-item-label > label {
+  font-weight: 500;
+}
+
+/* ---------- 弹层 ---------- */
+
+.ant-modal .ant-modal-title {
+  font-weight: 650;
+}
+
+.ant-message .ant-message-notice-content,
+.ant-notification .ant-notification-notice {
+  border-radius: 10px;
+  box-shadow: var(--eo-shadow-float);
+}
+
+.ant-popover .ant-popover-inner,
+.ant-dropdown .ant-dropdown-menu {
+  border-radius: 10px;
+  box-shadow: var(--eo-shadow-float);
+}
+
+/* ---------- 降低动态效果偏好 ---------- */
+
+@media (prefers-reduced-motion: reduce) {
+  .ant-btn,
+  .ant-card,
+  .ant-table-wrapper .ant-table-tbody > tr {
+    transition: none;
+  }
+
+  .ant-btn-primary:not(.ant-btn-dangerous):not(.ant-btn-background-ghost):not(:disabled):hover {
+    transform: none;
+  }
+}
