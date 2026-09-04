@@ -87,10 +87,10 @@ crossborder-install-isolated: ## 向 make crossborder-up 启动的独立环境�
 	@KBOT_URL=$(CROSSBORDER_ISOLATED_URL) KBOT_EMAIL=$(CROSSBORDER_ADMIN_EMAIL) KBOT_PASSWORD=$(CROSSBORDER_KBOT_PASSWORD) \
 		MODEL_CONFIG_BOOTSTRAP_HINT="make crossborder-bootstrap-model-config" bash projects/crossborder/scripts/install.sh
 
-crossborder-e2e: ## 在完整环境验证敏感调拨审批、恢复和审计闭环
+crossborder-e2e: ## 在完整环境验证敏感履约仓变更、恢复和审计闭环
 	@KBOT_URL=$(PLATFORM_URL) KBOT_EMAIL=$(CROSSBORDER_ADMIN_EMAIL) KBOT_PASSWORD=$(CROSSBORDER_KBOT_PASSWORD) bash projects/crossborder/scripts/e2e.sh
 
-crossborder-e2e-isolated: ## 在独立环境验证敏感调拨审批、恢复和审计闭环
+crossborder-e2e-isolated: ## 在独立环境验证敏感履约仓变更、恢复和审计闭环
 	@KBOT_URL=$(CROSSBORDER_ISOLATED_URL) KBOT_EMAIL=$(CROSSBORDER_ADMIN_EMAIL) KBOT_PASSWORD=$(CROSSBORDER_KBOT_PASSWORD) bash projects/crossborder/scripts/e2e.sh
 
 crossborder-model-smoke: ## 在完整环境用真实模型执行只读订单诊断，不触发写操作

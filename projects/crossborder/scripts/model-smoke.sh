@@ -28,7 +28,7 @@ fi
 
 stream_file=$(mktemp)
 trap 'rm -f "$stream_file"' EXIT
-prompt='仅进行只读分析，禁止调用任何写操作工具。请查询订单 TTS-20260801-1001、SKU SKU-BLACK-M-01 的实时订单、库存与物流信息，指出履约风险并给出建议；不要创建调拨、退款或申诉。'
+prompt='/order_exception_triage 仅进行只读分析，禁止调用任何写操作工具。请查询订单 TTS-20260801-1001、SKU SKU-BLACK-M-01 的实时订单、库存、可用调拨线路与发货物流，判断能否在 ship_by 前恢复履约并给出有证据的建议；不要创建调拨、退款或申诉。'
 curl -fsS -N --max-time 180 -X POST "$base_url/stream/agents/$agent_id/chat" "${auth[@]}" \
   -d "$(jq -n --arg message "$prompt" '{message:$message}')" >"$stream_file"
 
@@ -42,7 +42,7 @@ if printf '%s\n' "$events" | jq -e 'select(.type=="approval_required")' >/dev/nu
   echo "read-only smoke test unexpectedly requested a sensitive write operation; nothing was approved or executed" >&2
   exit 1
 fi
-if printf '%s\n' "$events" | jq -e 'select(.type=="tool_call" and (.text=="create_inventory_transfer" or .text=="approve_refund" or .text=="create_reconciliation_case"))' >/dev/null; then
+if printf '%s\n' "$events" | jq -e 'select(.type=="tool_call" and (.text=="create_inventory_transfer" or .text=="change_fulfillment_warehouse" or .text=="approve_refund" or .text=="create_reconciliation_case"))' >/dev/null; then
   echo "read-only smoke test attempted a forbidden write tool; nothing was approved or executed" >&2
   exit 1
 fi

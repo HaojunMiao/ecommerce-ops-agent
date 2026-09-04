@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"time"
 
 	"github.com/HaojunMiao/ecommerce-ops-agent/projects/crossborder/internal/service"
 )
@@ -30,16 +31,23 @@ func New(svc *service.Service) http.Handler {
 		if !decode(w, r, &in) {
 			return
 		}
-		respond(w, map[string]any{"sku": in.SKU, "balances": svc.Inventory(in.SKU)}, nil)
+		observedAt := time.Now().UTC()
+		respond(w, map[string]any{
+			"sku":            in.SKU,
+			"observed_at":    observedAt,
+			"balances":       svc.Inventory(in.SKU),
+			"transfer_lanes": svc.TransferLanes(in.SKU, observedAt),
+		}, nil)
 	})
 	mux.HandleFunc("POST /tools/get_shipping_options", func(w http.ResponseWriter, r *http.Request) {
 		var in struct {
-			OrderID string `json:"order_id"`
+			OrderID     string `json:"order_id"`
+			WarehouseID string `json:"warehouse_id"`
 		}
 		if !decode(w, r, &in) {
 			return
 		}
-		out, err := svc.ShippingOptions(in.OrderID)
+		out, err := svc.ShippingOptions(in.OrderID, in.WarehouseID)
 		respond(w, out, err)
 	})
 	mux.HandleFunc("POST /tools/get_statement", func(w http.ResponseWriter, r *http.Request) {
@@ -65,6 +73,23 @@ func New(svc *service.Service) http.Handler {
 			return
 		}
 		out, err := svc.CreateTransfer(service.TransferRequest{SKU: in.SKU, FromWarehouse: in.From, ToWarehouse: in.To, Quantity: in.Quantity, IdempotencyKey: in.Key, DryRun: in.DryRun})
+		respond(w, out, err)
+	})
+	mux.HandleFunc("POST /tools/change_fulfillment_warehouse", func(w http.ResponseWriter, r *http.Request) {
+		var in struct {
+			OrderID     string `json:"order_id"`
+			ToWarehouse string `json:"to_warehouse"`
+			Reason      string `json:"reason"`
+			Key         string `json:"idempotency_key"`
+			DryRun      bool   `json:"dry_run"`
+		}
+		if !decode(w, r, &in) {
+			return
+		}
+		out, err := svc.ChangeFulfillmentWarehouse(service.ChangeFulfillmentWarehouseRequest{
+			OrderID: in.OrderID, ToWarehouse: in.ToWarehouse, Reason: in.Reason,
+			IdempotencyKey: in.Key, DryRun: in.DryRun,
+		})
 		respond(w, out, err)
 	})
 	mux.HandleFunc("POST /tools/approve_refund", func(w http.ResponseWriter, r *http.Request) {

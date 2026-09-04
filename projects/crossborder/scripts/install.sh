@@ -87,10 +87,11 @@ test_input() {
     search_knowledge_base) jq -nc --arg kb_id "$kb_id" '{kb_id:$kb_id,query:"库存调拨规则",top_k:3}' ;;
     get_order) jq -nc '{order_id:"TTS-20260801-1001"}' ;;
     get_inventory) jq -nc '{sku:"SKU-BLACK-M-01"}' ;;
-    get_shipping_options) jq -nc '{order_id:"TTS-20260801-1001"}' ;;
+    get_shipping_options) jq -nc '{order_id:"TTS-20260801-1003",warehouse_id:"WH-US-BOS"}' ;;
     get_statement) jq -nc '{statement_id:"STMT-2026-31"}' ;;
-    create_inventory_transfer) jq -nc '{sku:"SKU-BLACK-M-01",from_warehouse:"WH-US-LAX",to_warehouse:"WH-CN-SZ",quantity:2,idempotency_key:"tool-test-transfer",dry_run:true}' ;;
-    approve_refund) jq -nc '{order_id:"TTS-20260801-1001",amount:129.99,reason:"tool test",idempotency_key:"tool-test-refund",dry_run:true}' ;;
+    create_inventory_transfer) jq -nc '{sku:"SKU-BLACK-M-01",from_warehouse:"WH-US-SFO",to_warehouse:"WH-US-LAX",quantity:1,idempotency_key:"tool-test-transfer",dry_run:true}' ;;
+    approve_refund) jq -nc '{order_id:"TTS-20260801-1002",amount:59.90,reason:"buyer cancellation",idempotency_key:"tool-test-refund",dry_run:true}' ;;
+    change_fulfillment_warehouse) jq -nc '{order_id:"TTS-20260801-1003",to_warehouse:"WH-US-BOS",reason:"transfer misses ship_by",idempotency_key:"tool-test-reroute",dry_run:true}' ;;
     create_reconciliation_case) jq -nc '{statement_id:"STMT-2026-31",reason:"tool test",idempotency_key:"tool-test-reconciliation",dry_run:true}' ;;
     *) jq -nc '{}' ;;
   esac
@@ -101,25 +102,48 @@ existing_tools=$(curl -fsS "$base_url/api/v1/tools" "${auth[@]}")
 tool_version_ids=()
 while IFS= read -r definition; do
   name=$(printf '%s' "$definition" | jq -r '.name')
+  desired_schema=$(printf '%s' "$definition" | jq -c '.schema_json')
+  desired_endpoint=$(printf '%s' "$definition" | jq -c --arg base "$tool_base_url" \
+    'if .endpoint_config.url? then .endpoint_config.url |= sub("^http://crossborder-sim:8091";$base) else . end | .endpoint_config')
   tool_id=$(printf '%s' "$existing_tools" | jq -r --arg name "$name" '.[] | select(.name==$name) | .id' | head -1)
   if [ -z "$tool_id" ]; then
     payload=$(printf '%s' "$definition" | jq --arg base "$tool_base_url" '
       if .endpoint_config.url? then .endpoint_config.url |= sub("^http://crossborder-sim:8091";$base) else . end
       | {name,source_type,description,sensitive,schema_json:(.schema_json|tojson),endpoint_config:(.endpoint_config|tojson),auth_config:"{}"}')
     tool_id=$(curl -fsS -X POST "$base_url/api/v1/tools" "${auth[@]}" -H "Idempotency-Key: install-crossborder-$name" -d "$payload" | jq -r '.id')
+  fi
+
+  versions=$(curl -fsS "$base_url/api/v1/tools/$tool_id/versions" "${auth[@]}")
+  tool_version_id=$(printf '%s' "$versions" | jq -r \
+    --argjson schema "$desired_schema" --argjson endpoint "$desired_endpoint" '
+      [.[] | select(.status=="published")
+        | select((.schema_json|fromjson)==$schema)
+        | select((.endpoint_config|fromjson)==$endpoint)
+      ] | sort_by(.version) | last | .id // empty')
+
+  if [ -z "$tool_version_id" ]; then
+    current_draft_id=$(printf '%s' "$versions" | jq -r \
+      --argjson schema "$desired_schema" --argjson endpoint "$desired_endpoint" '
+        sort_by(.version) | last
+        | select(.status=="draft")
+        | select((.schema_json|fromjson)==$schema)
+        | select((.endpoint_config|fromjson)==$endpoint)
+        | .id // empty')
+    if [ -n "$current_draft_id" ]; then
+      tool_version_id=$current_draft_id
+    else
+      tool_version_id=$(curl -fsS -X POST "$base_url/api/v1/tools/$tool_id/versions" "${auth[@]}" \
+        -d "$(jq -n --argjson schema "$desired_schema" --argjson endpoint "$desired_endpoint" \
+          '{schema_json:($schema|tojson),endpoint_config:($endpoint|tojson)}')" | jq -r '.id')
+    fi
+
     input=$(test_input "$name")
     test_result=$(curl -fsS -X POST "$base_url/api/v1/tools/$tool_id/test" "${auth[@]}" -d "$(jq -n --argjson input "$input" '{input:$input}')")
     if [ "$(printf '%s' "$test_result" | jq -r '.status')" != "success" ]; then
       printf 'tool %s test failed: %s\n' "$name" "$(printf '%s' "$test_result" | jq -r '.error')" >&2
       exit 1
     fi
-    curl -fsS -X POST "$base_url/api/v1/tools/$tool_id/publish" "${auth[@]}" -d '{}' >/dev/null
-  fi
-  tool_version_id=$(curl -fsS "$base_url/api/v1/tools/$tool_id/versions" "${auth[@]}" |
-    jq -r '[.[] | select(.status=="published")] | sort_by(.version) | last | .id // empty')
-  if [ -z "$tool_version_id" ]; then
-    printf 'tool %s has no published version\n' "$name" >&2
-    exit 1
+    curl -fsS -X POST "$base_url/api/v1/tools/$tool_id/versions/$tool_version_id/publish" "${auth[@]}" -d '{}' >/dev/null
   fi
   tool_version_ids+=("$tool_version_id")
 done < <(jq -c '.[]' "$project_dir/config/tools.json")
@@ -193,7 +217,7 @@ agent_config=$(jq -n \
   --arg kb "$kb_id" \
   --argjson tools "$tool_version_ids_json" \
   --argjson skills "$skill_ids_json" \
-  '{system_prompt_version_id:$system_prompt_version_id,model_config_version_id:$model_config_version_id,generation_config:{temperature:0.2,max_output_tokens:2048},tool_version_ids:$tools,skill_version_ids:$skills,kb_ids:[$kb],allow_network:true,max_steps:10}')
+  '{system_prompt_version_id:$system_prompt_version_id,model_config_version_id:$model_config_version_id,generation_config:{temperature:0.2,max_output_tokens:2048},tool_version_ids:$tools,skill_version_ids:$skills,kb_ids:[$kb],allow_network:true,max_steps:16}')
 if [ -z "$agent_id" ]; then
   agent_payload=$(printf '%s' "$agent_config" | jq --arg name "$agent_name" '. + {name:$name,template:"crossborder_commerce"}')
   agent_id=$(curl -fsS -X POST "$base_url/api/v1/agents" "${auth[@]}" -d "$agent_payload" | jq -r '.id')
@@ -214,7 +238,7 @@ else
          and $config.skill_version_ids==$skills
          and $config.kb_ids==[$kb]
          and $config.allow_network==true
-         and $config.max_steps==10)')
+         and $config.max_steps==16)')
   if [ "$config_matches" != "true" ]; then
     curl -fsS -X POST "$base_url/api/v1/agents/$agent_id/versions" "${auth[@]}" \
       -d "$agent_config" >/dev/null

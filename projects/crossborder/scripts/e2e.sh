@@ -29,7 +29,7 @@ fi
 stream_file=$(mktemp)
 trap 'rm -f "$stream_file"' EXIT
 curl -fsS -N -X POST "$base_url/stream/agents/$agent_id/chat" "${auth[@]}" \
-  -d '{"message":"诊断并执行调拨订单 TTS-20260801-1001"}' >"$stream_file"
+  -d '{"message":"/order_exception_triage 处理订单 TTS-20260801-1003：核实订单、SKU-BLUE-S-03 库存、调拨线路和候选仓发货渠道；若调拨无法在 ship_by 前到达，请将履约仓从 WH-US-LAX 切换到 WH-US-BOS 并等待人工审批。"}' >"$stream_file"
 
 conversation_id=$(sed -n 's/^data: //p' "$stream_file" | jq -r 'select(.type=="started") | .data.conversation_id' | head -1)
 approval_id=$(sed -n 's/^data: //p' "$stream_file" | jq -r 'select(.type=="approval_required") | .data.approval_id' | head -1)
@@ -38,7 +38,7 @@ if [ -z "$conversation_id" ] || [ -z "$approval_id" ]; then
   cat "$stream_file" >&2
   exit 1
 fi
-if ! sed -n 's/^data: //p' "$stream_file" | jq -e 'select(.type=="approval_required") | select(.data.presentation.title=="库存调拨审批")' >/dev/null; then
+if ! sed -n 's/^data: //p' "$stream_file" | jq -e 'select(.type=="approval_required") | select(.data.tool_name=="change_fulfillment_warehouse") | select(.data.presentation.title=="履约仓变更审批")' >/dev/null; then
   echo "approval stream did not include approval metadata" >&2
   exit 1
 fi
@@ -46,16 +46,31 @@ fi
 curl -fsS -X POST "$base_url/api/v1/approvals/$approval_id/approve" "${auth[@]}" -d '{}' >/dev/null
 
 completed=false
-for _ in $(seq 1 15); do
+for _ in $(seq 1 60); do
   conversation=$(curl -fsS "$base_url/api/v1/conversations/$conversation_id" "${auth[@]}")
-  if printf '%s' "$conversation" | jq -e '.messages[]? | select(.role=="assistant" and (.content|contains("调拨已经创建")))' >/dev/null; then
+  if printf '%s' "$conversation" | jq -e --arg approval_id "$approval_id" '
+    (.conversation.status=="active")
+    and any(.approvals[]?; .id==$approval_id and .status=="completed")
+    and any(.messages[]?; .role=="assistant" and ((.content // "") | length >= 100))' >/dev/null; then
     completed=true
     break
   fi
   sleep 1
 done
 if [ "$completed" != "true" ]; then
-  echo "approval resume did not complete" >&2
+  echo "approval resume did not reach completed/active state with a final answer" >&2
+  printf '%s\n' "$conversation" | jq '{conversation:.conversation,approvals:.approvals,messages:.messages}' >&2
+  exit 1
+fi
+final_answer=$(printf '%s' "$conversation" | jq -r '[.messages[] | select(.role=="assistant")][-1].content')
+if ! printf '%s' "$final_answer" | grep -Eq 'FW-[0-9]+'; then
+  echo "final answer does not report the fulfillment warehouse change ID" >&2
+  printf '%s\n' "$final_answer" >&2
+  exit 1
+fi
+if printf '%s' "$final_answer" | grep -Eq '等待.{0,6}审批|待人工审批'; then
+  echo "final answer incorrectly says that the completed approval is still pending" >&2
+  printf '%s\n' "$final_answer" >&2
   exit 1
 fi
 

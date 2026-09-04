@@ -43,7 +43,7 @@
   {
     "name": "get_inventory",
     "source_type": "rest_api",
-    "description": "查询 SKU 在各仓库的可用和预留库存",
+    "description": "查询 SKU 在各仓库的库存，以及带观测时间、预计耗时和预计到仓时间的仓间调拨线路",
     "sensitive": false,
     "schema_json": {"type":"object","required":["sku"],"properties":{"sku":{"type":"string"}}},
     "endpoint_config": {"method":"POST","url":"http://crossborder-sim:8091/tools/get_inventory"}
@@ -51,9 +51,9 @@
   {
     "name": "get_shipping_options",
     "source_type": "rest_api",
-    "description": "查询订单可用承运商、费用、时效与 SLA 可行性",
+    "description": "查询订单从当前或指定候选履约仓发货时的承运商、费用、时效与 SLA 可行性",
     "sensitive": false,
-    "schema_json": {"type":"object","required":["order_id"],"properties":{"order_id":{"type":"string"}}},
+    "schema_json": {"type":"object","required":["order_id"],"properties":{"order_id":{"type":"string"},"warehouse_id":{"type":"string","description":"可选候选履约仓；省略时使用订单当前履约仓"}}},
     "endpoint_config": {"method":"POST","url":"http://crossborder-sim:8091/tools/get_shipping_options"}
   },
   {
@@ -72,7 +72,7 @@
     "schema_json": {
       "type":"object",
       "required":["sku","from_warehouse","to_warehouse","quantity","idempotency_key"],
-      "properties":{"sku":{"type":"string"},"from_warehouse":{"type":"string"},"to_warehouse":{"type":"string"},"quantity":{"type":"integer","minimum":1},"idempotency_key":{"type":"string"},"dry_run":{"type":"boolean","description":"仅用于工具试调，不写入业务状态"}},
+      "properties":{"sku":{"type":"string"},"from_warehouse":{"type":"string"},"to_warehouse":{"type":"string"},"quantity":{"type":"integer","minimum":1},"idempotency_key":{"type":"string"}},
       "x-kbot-approval":{"title":"库存调拨审批","operation_label":"创建跨仓库存调拨","risk_label":"影响可售库存","field_order":["sku","from_warehouse","to_warehouse","quantity"],"field_labels":{"sku":"SKU","from_warehouse":"源仓","to_warehouse":"目标仓","quantity":"调拨数量","idempotency_key":"幂等键"}}
     },
     "endpoint_config": {"method":"POST","url":"http://crossborder-sim:8091/tools/create_inventory_transfer"}
@@ -84,10 +84,22 @@
     "sensitive": true,
     "schema_json": {
       "type":"object","required":["order_id","amount","reason","idempotency_key"],
-      "properties":{"order_id":{"type":"string"},"amount":{"type":"number","exclusiveMinimum":0},"reason":{"type":"string"},"idempotency_key":{"type":"string"},"dry_run":{"type":"boolean","description":"仅用于工具试调，不写入业务状态"}},
+      "properties":{"order_id":{"type":"string"},"amount":{"type":"number","exclusiveMinimum":0},"reason":{"type":"string"},"idempotency_key":{"type":"string"}},
       "x-kbot-approval":{"title":"跨境订单退款审批","operation_label":"批准订单退款","risk_label":"资金操作","field_order":["order_id","amount","reason"],"field_labels":{"order_id":"订单号","amount":"退款金额","reason":"退款原因","idempotency_key":"幂等键"},"currency_fields":{"amount":"$"}}
     },
     "endpoint_config": {"method":"POST","url":"http://crossborder-sim:8091/tools/approve_refund"}
+  },
+  {
+    "name": "change_fulfillment_warehouse",
+    "source_type": "rest_api",
+    "description": "将待发货订单切换到库存充足且存在 SLA 可行发货渠道的候选履约仓",
+    "sensitive": true,
+    "schema_json": {
+      "type":"object","required":["order_id","to_warehouse","reason","idempotency_key"],
+      "properties":{"order_id":{"type":"string"},"to_warehouse":{"type":"string"},"reason":{"type":"string"},"idempotency_key":{"type":"string"}},
+      "x-kbot-approval":{"title":"履约仓变更审批","operation_label":"切换订单履约仓","risk_label":"影响库存预留与发货路径","field_order":["order_id","to_warehouse","reason"],"field_labels":{"order_id":"订单号","to_warehouse":"目标履约仓","reason":"变更原因","idempotency_key":"幂等键"}}
+    },
+    "endpoint_config": {"method":"POST","url":"http://crossborder-sim:8091/tools/change_fulfillment_warehouse"}
   },
   {
     "name": "create_reconciliation_case",
@@ -96,7 +108,7 @@
     "sensitive": true,
     "schema_json": {
       "type":"object","required":["statement_id","reason","idempotency_key"],
-      "properties":{"statement_id":{"type":"string"},"reason":{"type":"string"},"idempotency_key":{"type":"string"},"dry_run":{"type":"boolean","description":"仅用于工具试调，不写入业务状态"}},
+      "properties":{"statement_id":{"type":"string"},"reason":{"type":"string"},"idempotency_key":{"type":"string"}},
       "x-kbot-approval":{"title":"结算申诉审批","operation_label":"提交平台结算申诉","risk_label":"财务操作","field_order":["statement_id","reason"],"field_labels":{"statement_id":"账单号","reason":"差异原因","idempotency_key":"幂等键"}}
     },
     "endpoint_config": {"method":"POST","url":"http://crossborder-sim:8091/tools/create_reconciliation_case"}

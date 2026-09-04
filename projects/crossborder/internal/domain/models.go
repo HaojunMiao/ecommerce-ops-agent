@@ -15,16 +15,16 @@ type OrderItem struct {
 }
 
 type Order struct {
-	ID               string      `json:"id"`
-	ShopID           string      `json:"shop_id"`
-	Market           string      `json:"market"`
-	Currency         string      `json:"currency"`
-	Amount           float64     `json:"amount"`
-	Status           string      `json:"status"`
-	FulfillmentWH    string      `json:"fulfillment_warehouse"`
-	ShipBy           time.Time   `json:"ship_by"`
-	Items            []OrderItem `json:"items"`
-	CancellationOpen bool        `json:"cancellation_open"`
+	ID                         string      `json:"id"`
+	ShopID                     string      `json:"shop_id"`
+	Market                     string      `json:"market"`
+	Currency                   string      `json:"currency"`
+	Amount                     float64     `json:"amount"`
+	Status                     string      `json:"status"`
+	FulfillmentWH              string      `json:"fulfillment_warehouse"`
+	ShipBy                     time.Time   `json:"ship_by"`
+	Items                      []OrderItem `json:"items"`
+	BuyerCancellationRequested bool        `json:"buyer_cancellation_requested"`
 }
 
 type InventoryBalance struct {
@@ -32,9 +32,20 @@ type InventoryBalance struct {
 	SKU         string `json:"sku"`
 	Available   int    `json:"available"`
 	Reserved    int    `json:"reserved"`
+	Inbound     int    `json:"inbound"`
+}
+
+// TransferLane describes a supported warehouse-to-warehouse route. It gives the
+// Agent an evidence-backed lead time instead of asking the model to invent one.
+type TransferLane struct {
+	FromWarehouse    string    `json:"from_warehouse"`
+	ToWarehouse      string    `json:"to_warehouse"`
+	EstimatedHours   int       `json:"estimated_hours"`
+	EstimatedArrival time.Time `json:"estimated_arrival"`
 }
 
 type ShippingOption struct {
+	WarehouseID  string  `json:"warehouse_id"`
 	Provider     string  `json:"provider"`
 	Service      string  `json:"service"`
 	Cost         float64 `json:"cost"`
@@ -44,11 +55,22 @@ type ShippingOption struct {
 }
 
 type InventoryTransfer struct {
+	ID               string    `json:"id"`
+	SKU              string    `json:"sku"`
+	FromWarehouse    string    `json:"from_warehouse"`
+	ToWarehouse      string    `json:"to_warehouse"`
+	Quantity         int       `json:"quantity"`
+	Status           string    `json:"status"`
+	EstimatedArrival time.Time `json:"estimated_arrival"`
+	CreatedAt        time.Time `json:"created_at"`
+}
+
+type FulfillmentWarehouseChange struct {
 	ID            string    `json:"id"`
-	SKU           string    `json:"sku"`
+	OrderID       string    `json:"order_id"`
 	FromWarehouse string    `json:"from_warehouse"`
 	ToWarehouse   string    `json:"to_warehouse"`
-	Quantity      int       `json:"quantity"`
+	Reason        string    `json:"reason"`
 	Status        string    `json:"status"`
 	CreatedAt     time.Time `json:"created_at"`
 }
