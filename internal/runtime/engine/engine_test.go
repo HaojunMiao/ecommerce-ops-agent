@@ -135,6 +135,29 @@ func TestChatStreamRejectsConversationOwnershipMismatch(t *testing.T) {
 	}
 }
 
+func TestChatStreamRejectsEmptyFinalAnswer(t *testing.T) {
+	plat := &fakePlatform{snapshot: &AgentSnapshot{ID: "v1", WorkspaceID: "w1", AgentID: "a1"}}
+	gen := &scriptedChatModel{replies: []*schema.Message{schema.AssistantMessage("", nil)}}
+	e := &Engine{platform: plat, model: gen}
+
+	ch, err := e.ChatStream(context.Background(), ChatStreamRequest{AgentID: "a1", Message: "hello", UserID: "u1"})
+	if err != nil {
+		t.Fatalf("chat: %v", err)
+	}
+	var gotError string
+	for event := range ch {
+		if event.Type == EventError {
+			gotError = event.Text
+		}
+	}
+	if !strings.Contains(gotError, "without a displayable assistant response") {
+		t.Fatalf("expected explicit empty-answer error, got %q", gotError)
+	}
+	if len(plat.appended) != 0 {
+		t.Fatalf("empty answer must not be persisted: %v", plat.appended)
+	}
+}
+
 func TestSkillL2Injection(t *testing.T) {
 	plat := &fakePlatform{snapshot: &AgentSnapshot{
 		ID:           "v1",

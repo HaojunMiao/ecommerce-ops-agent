@@ -217,7 +217,7 @@ agent_config=$(jq -n \
   --arg kb "$kb_id" \
   --argjson tools "$tool_version_ids_json" \
   --argjson skills "$skill_ids_json" \
-  '{system_prompt_version_id:$system_prompt_version_id,model_config_version_id:$model_config_version_id,generation_config:{temperature:0.2,max_output_tokens:2048},tool_version_ids:$tools,skill_version_ids:$skills,kb_ids:[$kb],allow_network:true,max_steps:16}')
+  '{system_prompt_version_id:$system_prompt_version_id,model_config_version_id:$model_config_version_id,generation_config:{temperature:0.2},tool_version_ids:$tools,skill_version_ids:$skills,kb_ids:[$kb],allow_network:true,max_steps:16}')
 if [ -z "$agent_id" ]; then
   agent_payload=$(printf '%s' "$agent_config" | jq --arg name "$agent_name" '. + {name:$name,template:"crossborder_commerce"}')
   agent_id=$(curl -fsS -X POST "$base_url/api/v1/agents" "${auth[@]}" -d "$agent_payload" | jq -r '.id')
@@ -233,7 +233,7 @@ else
       | ($config.system_prompt_version_id==$system_prompt_version_id
          and $config.model_config_version_id==$model_config_version_id
          and $config.generation_config.temperature==0.2
-         and $config.generation_config.max_output_tokens==2048
+         and $config.generation_config.max_output_tokens==null
          and $config.tool_version_ids==$tools
          and $config.skill_version_ids==$skills
          and $config.kb_ids==[$kb]

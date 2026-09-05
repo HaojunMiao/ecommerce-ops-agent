@@ -447,6 +447,11 @@ func (e *Engine) ChatStream(ctx context.Context, req ChatStreamRequest) (<-chan 
 			traceOutput = "awaiting approval"
 			return
 		}
+		if err := validateFinalAnswer(answer); err != nil {
+			traceErr = err
+			em.send(AgentEvent{Type: EventError, Text: err.Error()})
+			return
+		}
 
 		if err := e.commitConversationTurn(ctx, turns, conv.ID, turnToken, []*domain.Message{
 			{ID: util.GenerateID(), ConversationID: conv.ID, Role: "user", Content: userMsg},
@@ -468,6 +473,15 @@ func (e *Engine) ChatStream(ctx context.Context, req ChatStreamRequest) (<-chan 
 	}()
 
 	return eventCh, nil
+}
+
+// validateFinalAnswer prevents a provider response containing only reasoning
+// tokens (or otherwise no displayable text) from being persisted as success.
+func validateFinalAnswer(answer string) error {
+	if strings.TrimSpace(answer) == "" {
+		return fmt.Errorf("model completed without a displayable assistant response")
+	}
+	return nil
 }
 
 func (e *Engine) commitConversationTurn(

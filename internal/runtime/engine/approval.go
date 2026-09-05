@@ -165,6 +165,9 @@ func (e *Engine) Resume(ctx context.Context, conversationID, approvalID string) 
 		turnFinalized = true
 		return "", errAwaitApproval
 	}
+	if err := validateFinalAnswer(answer); err != nil {
+		return "", err
+	}
 
 	if err := e.commitConversationTurn(ctx, turns, conversationID, turnToken, []*domain.Message{{
 		ID: util.GenerateID(), ConversationID: conversationID, Role: "assistant", Content: answer,
